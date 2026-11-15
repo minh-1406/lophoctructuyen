@@ -29,6 +29,12 @@ import {
   cloudSaveReport,
   cloudDeleteReport,
   cloudSyncAll,
+  getSavedSyncKey,
+  setSavedSyncKey,
+  getActiveCloudOwnerId,
+  getActiveCloudLabel,
+  exportBackupJson,
+  importBackupJson,
   type User,
 } from './cloudSync';
 
@@ -177,6 +183,7 @@ export default function App() {
   const [docTextSrc, setDocTextSrc] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
   const [importingImage, setImportingImage] = useState<File | null>(null);
+  const [aiQuestionCount, setAiQuestionCount] = useState<number>(4);
 
   // Host State
   const [roomCode, setRoomCode] = useState('');
@@ -220,6 +227,9 @@ export default function App() {
   const [statsClassFilter, setStatsClassFilter] = useState<string>('ALL');
   const [expandedActivitySlides, setExpandedActivitySlides] = useState<Record<string, boolean>>({});
   const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudSyncKey, setCloudSyncKey] = useState<string>(() => getSavedSyncKey());
+  const [cloudKeyInput, setCloudKeyInput] = useState<string>(() => getSavedSyncKey());
+  const [showCloudModal, setShowCloudModal] = useState(false);
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = useState('');
 
@@ -546,7 +556,7 @@ export default function App() {
         t.oncomplete = () => ok();
         t.onerror = no;
       });
-      if (!skipCloud && auth.currentUser) {
+      if (!skipCloud && getActiveCloudOwnerId()) {
         cloudSaveReport(report).catch(() => {});
       }
     } catch {}
@@ -560,7 +570,7 @@ export default function App() {
         t.objectStore('reports').delete(id);
         t.oncomplete = () => ok();
       });
-      if (auth.currentUser) {
+      if (getActiveCloudOwnerId()) {
         cloudDeleteReport(id).catch(() => {});
       }
     } catch {}
@@ -613,7 +623,7 @@ export default function App() {
   }, []);
 
   const syncWithCloudNow = async (showNotice = true) => {
-    if (!auth.currentUser) return;
+    if (!getActiveCloudOwnerId()) return;
     setCloudSyncing(true);
     if (showNotice) setCloudSyncMsg('Đang đồng bộ dữ liệu đám mây...');
     try {
@@ -642,21 +652,53 @@ export default function App() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, u => {
       setCloudUser(u);
-      if (u) {
+      if (u && u.email && !getSavedSyncKey()) {
+        const norm = setSavedSyncKey(u.email);
+        setCloudSyncKey(norm);
+        setCloudKeyInput(norm);
+      }
+      if (u || getSavedSyncKey()) {
         syncWithCloudNow(true);
-      } else {
-        setCloudSyncMsg('');
       }
     });
+    if (getSavedSyncKey()) {
+      syncWithCloudNow(true);
+    }
     return () => unsub();
   }, []);
+
+  const handleSaveCloudKeyAndSync = async () => {
+    const norm = setSavedSyncKey(cloudKeyInput);
+    if (!norm) {
+      setCloudSyncMsg('Vui lòng nhập Mã đồng bộ hoặc Email (tối thiểu 3 ký tự chữ/số, ví dụ: quangminh1485).');
+      return;
+    }
+    setCloudSyncKey(norm);
+    setCloudKeyInput(norm);
+    await syncWithCloudNow(true);
+    setShowCloudModal(false);
+  };
 
   const handleCloudLogin = async () => {
     try {
       setCloudSyncing(true);
-      await signInWithPopup(auth, googleProvider);
+      const cred = await signInWithPopup(auth, googleProvider);
+      if (cred?.user?.email) {
+        const norm = setSavedSyncKey(cred.user.email);
+        setCloudSyncKey(norm);
+        setCloudKeyInput(norm);
+      }
+      await syncWithCloudNow(true);
+      setShowCloudModal(false);
     } catch (err: any) {
-      setCloudSyncMsg('Không thể đăng nhập Google: ' + (err?.message || 'Đã hủy'));
+      const msg = String(err?.message || err?.code || '');
+      if (msg.includes('unauthorized-domain') || msg.includes('popup')) {
+        setCloudSyncMsg(
+          'Tên miền hiện tại (Vercel/TV) chặn cửa sổ Google Popup. Hãy nhập trực tiếp Email hoặc Mã đồng bộ của bạn ở ô bên trên để đồng bộ ngay!'
+        );
+      } else {
+        setCloudSyncMsg('Hãy nhập Mã đồng bộ / Email ở ô bên trên để đồng bộ trực tiếp.');
+      }
     } finally {
       setCloudSyncing(false);
     }
@@ -664,10 +706,52 @@ export default function App() {
 
   const handleCloudLogout = async () => {
     try {
+      setSavedSyncKey('');
+      setCloudSyncKey('');
+      setCloudKeyInput('');
       await fbSignOut(auth);
       setCloudUser(null);
-      setCloudSyncMsg('Đã đăng xuất tài khoản đám mây.');
+      setCloudSyncMsg('Đã ngắt kết nối đồng bộ đám mây trên thiết bị này.');
     } catch {}
+  };
+
+  const handleExportBackupFile = async () => {
+    try {
+      setCloudSyncing(true);
+      const [localLessons, localReps] = await Promise.all([dbAll(), reportsAll()]);
+      await exportBackupJson(localLessons, localReps);
+      setCloudSyncMsg('Đã tải file sao lưu toàn bộ bài giảng & thống kê về máy.');
+    } catch (e: any) {
+      setCloudSyncMsg('Lỗi xuất file sao lưu: ' + (e?.message || ''));
+    } finally {
+      setCloudSyncing(false);
+    }
+  };
+
+  const handleImportBackupFile = async (file: File) => {
+    try {
+      setCloudSyncing(true);
+      const { lessons: impLessons, reports: impReps } = await importBackupJson(file);
+      for (const l of impLessons) {
+        if (l?.id) await dbPut(l);
+      }
+      for (const r of impReps) {
+        if (r?.id) await reportsPut(r, false);
+      }
+      const [allLessons, allReps] = await Promise.all([dbAll(), reportsAll()]);
+      setMine(allLessons);
+      setSessionReports(allReps);
+      saveReportsSummaryFallback(allReps);
+      if (getActiveCloudOwnerId()) {
+        await syncWithCloudNow(false);
+      }
+      setCloudSyncMsg(`Đã khôi phục thành công ${impLessons.length} bài giảng và ${impReps.length} thống kê!`);
+      setShowCloudModal(false);
+    } catch (e: any) {
+      setCloudSyncMsg('File sao lưu không hợp lệ: ' + (e?.message || ''));
+    } finally {
+      setCloudSyncing(false);
+    }
   };
 
   // Auto-save lesson whenever it has real content and changes
@@ -708,7 +792,7 @@ export default function App() {
     const sig = getLessonSignature(lToSave);
     lastSavedLessonSigRef.current = sig;
     await dbPut(lToSave);
-    if (auth.currentUser) {
+    if (getActiveCloudOwnerId()) {
       cloudSaveLesson(lToSave).catch(() => {});
     }
     setMine(prev => {
@@ -726,7 +810,7 @@ export default function App() {
     }
     if (showToast) {
       setSaveMsg(
-        auth.currentUser
+        getActiveCloudOwnerId()
           ? 'Đã lưu bài giảng và đồng bộ lên Đám mây (Firebase).'
           : 'Đã lưu bài giảng trên trình duyệt.'
       );
@@ -753,7 +837,7 @@ export default function App() {
       setSessionReports(sorted);
     }
     setView('dash');
-    if (auth.currentUser) {
+    if (getActiveCloudOwnerId()) {
       syncWithCloudNow(false);
     }
   };
@@ -771,7 +855,7 @@ export default function App() {
     const l = mine[index];
     if (l && l.id) {
       await dbDel(l.id);
-      if (auth.currentUser) {
+      if (getActiveCloudOwnerId()) {
         cloudDeleteLesson(l.id).catch(() => {});
       }
       loadDashboard();
@@ -1255,7 +1339,7 @@ export default function App() {
   };
 
   // AI Auto-Insert Interactive Slides (works for imported .pptx/.pdf and any existing lesson slides)
-  const autoInsertInteractiveSlides = async () => {
+  const autoInsertInteractiveSlides = async (targetCountOverride?: number) => {
     const base = lesson.slides.filter(x => !x.auto);
     const hasContent = base.some(
       x => (x.q || '').trim() || (x.b || '').trim() || (x.tx || '').trim() || (x.imgs && x.imgs.length > 0) || !!x.vid
@@ -1267,9 +1351,11 @@ export default function App() {
       return;
     }
 
+    const countToInsert = Math.max(1, Math.min(20, Number(targetCountOverride || aiQuestionCount || 4)));
+
     setIsAutoInserting(true);
-    setAutoInsertMsg('AI đang đọc nội dung từng slide và chọn chỗ chèn câu hỏi tương tác...');
-    setGenMsg('AI đang đọc nội dung từng slide và chọn chỗ chèn câu hỏi...');
+    setAutoInsertMsg(`AI đang đọc nội dung từng slide và chọn chỗ chèn ${countToInsert} câu hỏi tương tác...`);
+    setGenMsg(`AI đang đọc nội dung từng slide và chọn chỗ chèn ${countToInsert} câu hỏi tương tác...`);
 
     try {
       const list = base
@@ -1281,20 +1367,23 @@ export default function App() {
         .join('\n');
 
       const raw = await callAi(
-        `Bạn là trợ lý thiết kế bài giảng tương tác tiếng Việt.
+        `Bạn là trợ lý thiết kế bài giảng sư phạm tương tác thông minh và sáng tạo tiếng Việt.
 Tên bài giảng: "${lesson.title || 'Bài giảng trên lớp'}".
 Dưới đây là danh sách các slide hiện có (số thứ tự từ 0 đến ${base.length - 1}):
 ${list}
 
-Các slide hiện có phải được GIỮ NGUYÊN. Hãy chọn vị trí phù hợp để chèn thêm khoảng ${Math.max(2, Math.min(6, Math.ceil(base.length / 2)))} slide câu hỏi tương tác bám sát nội dung bài giảng.
-Quy tắc:
+Các slide hiện có phải được GIỮ NGUYÊN. Hãy chọn vị trí phù hợp để chèn thêm đúng ${countToInsert} slide câu hỏi tương tác bám sát nội dung bài giảng.
+Quy tắc cực kỳ quan trọng:
 - "after": số nguyên từ -1 đến ${base.length - 1} (-1 là chèn vào đầu bài, i là chèn ngay sau slide thứ i).
-- "type": chỉ chọn một trong các loại: "cloud", "open", "poll", "quiz", "scale", "draw".
-- "q": câu hỏi ngắn gọn, rõ ràng bằng tiếng Việt cho học sinh trả lời.
-- Nếu "type" là "poll" hoặc "quiz": bắt buộc có "opts" gồm 3–4 lựa chọn ngắn gọn.
-- Nếu "type" là "quiz": bắt buộc có "a" là chỉ số đáp án đúng (bắt đầu từ 0).
-- Nếu "type" là "open": đặt "ai": true.
-Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu bài, quiz kiểm tra kiến thức giữa bài, open+ai để học sinh suy nghĩ, scale đánh giá mức độ hiểu bài cuối bài).`,
+- "type": phải sử dụng đa dạng các loại câu hỏi phong phú sau đây:
+  1. "cloud" (Đám mây từ / từ khóa nhanh)
+  2. "open" (Câu hỏi mở tự luận, thảo luận sâu, yêu cầu đặt "ai": true)
+  3. "poll" (Bình chọn / Khảo sát ý kiến học sinh, bắt buộc có "opts" gồm 3–4 lựa chọn)
+  4. "quiz" (Trắc nghiệm kiểm tra kiến thức đúng/sai, bắt buộc có "opts" gồm 3–4 lựa chọn và "a" là chỉ số đáp án đúng từ 0)
+  5. "scale" (Thang điểm đánh giá từ 1 đến 5 mức độ hiểu bài / tự tin)
+  6. "draw" (Vẽ sơ đồ tư duy hoặc minh họa trực quan nhanh)
+- "q": câu hỏi ngắn gọn, rõ ràng, sâu sắc bằng tiếng Việt cho học sinh trả lời.
+Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, quiz, scale, draw) xuyên suốt bài giảng.`,
         { json: true, schemaType: 'autoInsert' }
       );
 
@@ -1319,7 +1408,7 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
           const cleanOpts = Array.isArray(x.opts)
             ? x.opts.map((o: any) => String(o || '').trim()).filter(Boolean)
             : [];
-          const resolvedOpts = cleanOpts.length >= 2 ? cleanOpts : ['Lựa chọn A', 'Lựa chọn B', 'Lựa chọn C'];
+          const resolvedOpts = cleanOpts.length >= 2 ? cleanOpts : ['Lựa chọn A', 'Lựa chọn B', 'Lựa chọn C', 'Lựa chọn D'];
           normalized.opts = resolvedOpts;
           if (slideType === 'quiz') {
             const ansIdx = Number.isFinite(Number(x.a)) ? Math.trunc(Number(x.a)) : 0;
@@ -1349,7 +1438,7 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
       });
 
       setLesson(prev => ({ ...prev, slides: r2 }));
-      const okMsg = `AI đã tự chèn ${insertedCount} slide câu hỏi tương tác vào bài giảng.`;
+      const okMsg = `AI đã tự động chèn thành công ${insertedCount} câu hỏi tương tác đa dạng vào bài giảng.`;
       setAutoInsertMsg(okMsg);
       setGenMsg(okMsg);
     } catch (e: any) {
@@ -2545,38 +2634,27 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
               <button onClick={() => { newLesson(); setView('build'); }} className="px-4 py-2 text-sm font-semibold rounded-xl bg-purple-600 text-white hover:bg-purple-700 shadow-sm transition flex items-center gap-1.5">
                 <Plus className="w-4 h-4" /> Tạo bài giảng
               </button>
-              {cloudUser ? (
-                <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 px-3 py-1.5 rounded-xl">
-                  <Cloud className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300 max-w-[120px] truncate" title={cloudUser.email || ''}>
-                    {cloudUser.displayName || cloudUser.email || 'Đã đồng bộ'}
-                  </span>
-                  <button
-                    onClick={() => syncWithCloudNow(true)}
-                    disabled={cloudSyncing}
-                    title="Đồng bộ dữ liệu ngay"
-                    className="p-1 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 transition"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncing ? 'animate-spin' : ''}`} />
-                  </button>
-                  <button
-                    onClick={handleCloudLogout}
-                    title="Đăng xuất đám mây"
-                    className="text-[11px] font-semibold text-stone-500 hover:text-red-600 px-1"
-                  >
-                    Thoát
-                  </button>
-                </div>
-              ) : (
+              {/* Inline Cloud Sync Box directly in Navbar (No popup needed) */}
+              <div className="flex items-center gap-1.5 bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 px-2.5 py-1 rounded-xl">
+                <Cloud className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
+                <input
+                  type="text"
+                  value={cloudKeyInput}
+                  onChange={e => setCloudKeyInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSaveCloudKeyAndSync()}
+                  placeholder="Mã đồng bộ (vd: quangminh1485)"
+                  title="Nhập chung 1 mã trên mọi máy tính / Vercel / Tivi để đồng bộ bài giảng"
+                  className="w-28 sm:w-36 !py-1 !px-2 text-xs font-bold bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-800 rounded-lg"
+                />
                 <button
-                  onClick={handleCloudLogin}
+                  onClick={handleSaveCloudKeyAndSync}
                   disabled={cloudSyncing}
-                  className="px-3.5 py-2 text-xs font-bold rounded-xl bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 text-sky-700 dark:text-sky-300 hover:bg-sky-100 transition flex items-center gap-1.5"
+                  className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold rounded-lg transition flex items-center gap-1 shrink-0"
                 >
-                  <Cloud className="w-4 h-4" />
-                  {cloudSyncing ? 'Đang kết nối...' : 'Đồng bộ Đám mây'}
+                  <RefreshCw className={`w-3 h-3 ${cloudSyncing ? 'animate-spin' : ''}`} />
+                  {cloudSyncing ? 'Đang tải...' : 'Đồng bộ'}
                 </button>
-              )}
+              </div>
             </div>
           </div>
         </nav>
@@ -2626,41 +2704,70 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
 
         {/* DASHBOARD VIEW */}
         {view === 'dash' && (
-          <div className="space-y-8 py-4">
+          <div className="space-y-6 py-4">
             <div className="flex justify-between items-center flex-wrap gap-4">
               <div>
                 <h2 className="text-2xl font-bold">Bảng điều khiển</h2>
-                {cloudSyncMsg && (
-                  <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
-                    {cloudSyncMsg}
-                  </p>
-                )}
               </div>
               <div className="flex gap-2 flex-wrap">
-                {cloudUser ? (
-                  <button
-                    onClick={() => syncWithCloudNow(true)}
-                    disabled={cloudSyncing}
-                    className="px-4 py-2 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-semibold rounded-xl hover:bg-emerald-100 transition flex items-center gap-2 text-sm"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${cloudSyncing ? 'animate-spin' : ''}`} />
-                    {cloudSyncing ? 'Đang đồng bộ...' : 'Đồng bộ Đám mây'}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleCloudLogin}
-                    disabled={cloudSyncing}
-                    className="px-4 py-2 bg-sky-600 text-white font-semibold rounded-xl hover:bg-sky-700 shadow-sm transition flex items-center gap-2 text-sm"
-                  >
-                    <Cloud className="w-4 h-4" /> Đăng nhập Google để đồng bộ mọi máy
-                  </button>
-                )}
                 <button onClick={() => { newLesson(); setView('build'); }} className="px-4 py-2 bg-stone-200 dark:bg-slate-800 font-semibold rounded-xl hover:bg-stone-300 transition flex items-center gap-2">
                   <Plus className="w-4 h-4" /> Bài giảng mới
                 </button>
                 <button onClick={() => { newLesson(); setView('build'); }} className="px-4 py-2 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 shadow-sm transition flex items-center gap-2">
                   <Sparkles className="w-4 h-4" /> Tạo bằng AI
                 </button>
+              </div>
+            </div>
+
+            {/* Always-visible inline Cloud Sync & Backup bar in Dashboard */}
+            <div className="bg-sky-50/80 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900 p-4 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="text-sm font-bold text-sky-900 dark:text-sky-200 flex items-center gap-2">
+                  <Cloud className="w-4 h-4 text-sky-600" />
+                  Đồng bộ Đám mây tự động giữa các máy tính, Vercel & Tivi
+                </div>
+                <p className="text-xs text-stone-600 dark:text-slate-400">
+                  Nhập cùng 1 Mã đồng bộ (mặc định: <span className="font-bold text-sky-700 dark:text-sky-300">quangminh1485</span>) trên mọi thiết bị để tự động tải đầy đủ bài giảng và thống kê.
+                </p>
+                {cloudSyncMsg && (
+                  <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 pt-0.5">
+                    ✓ {cloudSyncMsg}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="text"
+                  value={cloudKeyInput}
+                  onChange={e => setCloudKeyInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSaveCloudKeyAndSync()}
+                  placeholder="Mã đồng bộ (vd: quangminh1485)"
+                  className="w-44 !py-2 !px-3 text-xs font-bold bg-white dark:bg-slate-900 border border-sky-300 dark:border-sky-800 rounded-xl"
+                />
+                <button
+                  onClick={handleSaveCloudKeyAndSync}
+                  disabled={cloudSyncing}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncing ? 'animate-spin' : ''}`} />
+                  {cloudSyncing ? 'Đang đồng bộ...' : 'Đồng bộ ngay'}
+                </button>
+                <button
+                  onClick={handleExportBackupFile}
+                  disabled={cloudSyncing}
+                  className="px-3 py-2 bg-white dark:bg-slate-900 border border-stone-300 dark:border-slate-700 hover:bg-stone-100 text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5 text-purple-600" /> Xuất file
+                </button>
+                <label className="px-3 py-2 bg-white dark:bg-slate-900 border border-stone-300 dark:border-slate-700 hover:bg-stone-100 text-xs font-bold rounded-xl cursor-pointer transition flex items-center gap-1.5">
+                  <Upload className="w-3.5 h-3.5 text-emerald-600" /> Nhập file
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={e => e.target.files?.[0] && handleImportBackupFile(e.target.files[0])}
+                    className="hidden"
+                  />
+                </label>
               </div>
             </div>
 
@@ -2831,13 +2938,24 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
                   onChange={e => e.target.files?.length && handlePresentationImport(e.target.files)} 
                   className="file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100 cursor-pointer"
                 />
+                <div className="flex items-center gap-2 bg-purple-50 dark:bg-purple-950/50 border border-purple-200 dark:border-purple-800 px-3 py-1.5 rounded-xl">
+                  <span className="text-xs font-bold text-purple-800 dark:text-purple-300">Số câu AI chèn:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="15"
+                    value={aiQuestionCount}
+                    onChange={e => setAiQuestionCount(Math.max(1, Math.min(15, Number(e.target.value) || 4)))}
+                    className="w-16 !py-1 !px-2 text-xs font-bold text-center bg-white dark:bg-slate-900 border border-purple-300 dark:border-purple-700 rounded-lg"
+                  />
+                </div>
                 <button
-                  onClick={autoInsertInteractiveSlides}
+                  onClick={() => autoInsertInteractiveSlides(aiQuestionCount)}
                   disabled={isAutoInserting}
-                  className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-semibold rounded-xl text-sm transition flex items-center gap-1.5"
+                  className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-semibold rounded-xl text-sm transition flex items-center gap-1.5 shadow-sm"
                 >
                   <Sparkles className={`w-4 h-4 ${isAutoInserting ? 'animate-spin' : ''}`} />
-                  {isAutoInserting ? 'AI đang chèn câu hỏi...' : 'AI tự chèn câu hỏi tương tác'}
+                  {isAutoInserting ? 'AI đang chèn...' : `AI chèn ${aiQuestionCount} câu hỏi`}
                 </button>
               </div>
               {autoInsertMsg && (
@@ -3260,7 +3378,7 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
               {/* Add Slide Toolbar */}
               <div className="flex flex-wrap gap-2 pt-4 border-t border-stone-200 dark:border-slate-800 items-center">
                 <button
-                  onClick={autoInsertInteractiveSlides}
+                  onClick={() => autoInsertInteractiveSlides(aiQuestionCount)}
                   disabled={isAutoInserting}
                   className="px-3.5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-semibold rounded-xl text-xs transition flex items-center gap-1.5"
                 >

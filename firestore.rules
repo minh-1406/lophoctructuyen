@@ -11,16 +11,24 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    // Validates teacher cloud sync namespace (supports both Firebase Auth UID and cross-domain Vercel Sync Key)
+    function isValidOwnerKey(ownerId) {
+      return ownerId is string &&
+        ownerId.size() >= 6 &&
+        ownerId.size() <= 128 &&
+        ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        (
+          (request.auth != null && ownerId == request.auth.uid) ||
+          ownerId.matches('^sync_[a-zA-Z0-9_\\-]{3,120}$')
+        );
+    }
+
     function incoming() {
       return request.resource.data;
     }
 
     function existing() {
       return resource.data;
-    }
-
-    function isSignedIn() {
-      return request.auth != null && request.auth.token.email_verified == true;
     }
 
     function isValidLessonMeta(data) {
@@ -49,8 +57,7 @@ service cloud.firestore {
         'updatedAt'
       ]) &&
       isValidId(data.id) &&
-      isValidId(data.ownerId) &&
-      data.ownerId == request.auth.uid &&
+      isValidOwnerKey(data.ownerId) &&
       data.title is string && data.title.size() <= 500 &&
       data.className is string && data.className.size() <= 200 &&
       data.customCode is string && data.customCode.size() <= 32 &&
@@ -78,8 +85,7 @@ service cloud.firestore {
         'createdAt',
         'updatedAt'
       ]) &&
-      isValidId(data.ownerId) &&
-      data.ownerId == request.auth.uid &&
+      isValidOwnerKey(data.ownerId) &&
       isValidId(data.lessonId) &&
       data.idx is int && data.idx >= 0 && data.idx <= 200 &&
       data.data is string && data.data.size() >= 1 && data.data.size() <= 750000 &&
@@ -111,8 +117,7 @@ service cloud.firestore {
         'updatedAt'
       ]) &&
       isValidId(data.id) &&
-      isValidId(data.ownerId) &&
-      data.ownerId == request.auth.uid &&
+      isValidOwnerKey(data.ownerId) &&
       data.lessonTitle is string && data.lessonTitle.size() <= 500 &&
       data.className is string && data.className.size() <= 200 &&
       data.roomCode is string && data.roomCode.size() <= 32 &&
@@ -123,20 +128,18 @@ service cloud.firestore {
     }
 
     match /lessons/{lessonId} {
-      allow get: if isSignedIn() && isValidId(lessonId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow get: if isValidId(lessonId) && isValidOwnerKey(existing().ownerId);
+      allow list: if isValidOwnerKey(existing().ownerId);
 
-      allow create: if isSignedIn() &&
-        isValidId(lessonId) &&
+      allow create: if isValidId(lessonId) &&
         isValidLessonMeta(incoming()) &&
         incoming().id == lessonId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
-      allow update: if isSignedIn() &&
-        isValidId(lessonId) &&
+      allow update: if isValidId(lessonId) &&
         isValidLessonMeta(incoming()) &&
-        existing().ownerId == request.auth.uid &&
+        isValidOwnerKey(existing().ownerId) &&
         incoming().ownerId == existing().ownerId &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
@@ -151,34 +154,30 @@ service cloud.firestore {
           'updatedAt'
         ]);
 
-      allow delete: if isSignedIn() && isValidId(lessonId) && existing().ownerId == request.auth.uid;
+      allow delete: if isValidId(lessonId) && isValidOwnerKey(existing().ownerId);
 
       match /chunks/{chunkId} {
-        allow get: if isSignedIn() &&
-          isValidId(lessonId) &&
+        allow get: if isValidId(lessonId) &&
           isValidId(chunkId) &&
-          existing().ownerId == request.auth.uid &&
+          isValidOwnerKey(existing().ownerId) &&
           exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == existing().ownerId;
 
-        allow list: if isSignedIn() &&
-          existing().ownerId == request.auth.uid;
+        allow list: if isValidOwnerKey(existing().ownerId);
 
-        allow create: if isSignedIn() &&
-          isValidId(lessonId) &&
+        allow create: if isValidId(lessonId) &&
           isValidId(chunkId) &&
           isValidLessonChunk(incoming()) &&
           incoming().lessonId == lessonId &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == incoming().ownerId;
 
-        allow update: if isSignedIn() &&
-          isValidId(lessonId) &&
+        allow update: if isValidId(lessonId) &&
           isValidId(chunkId) &&
           isValidLessonChunk(incoming()) &&
-          existing().ownerId == request.auth.uid &&
+          isValidOwnerKey(existing().ownerId) &&
           incoming().ownerId == existing().ownerId &&
           incoming().lessonId == existing().lessonId &&
           incoming().createdAt == existing().createdAt &&
@@ -189,32 +188,29 @@ service cloud.firestore {
             'updatedAt'
           ]) &&
           exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == existing().ownerId;
 
-        allow delete: if isSignedIn() &&
-          isValidId(lessonId) &&
+        allow delete: if isValidId(lessonId) &&
           isValidId(chunkId) &&
-          existing().ownerId == request.auth.uid &&
+          isValidOwnerKey(existing().ownerId) &&
           exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == existing().ownerId;
       }
     }
 
     match /reports/{reportId} {
-      allow get: if isSignedIn() && isValidId(reportId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow get: if isValidId(reportId) && isValidOwnerKey(existing().ownerId);
+      allow list: if isValidOwnerKey(existing().ownerId);
 
-      allow create: if isSignedIn() &&
-        isValidId(reportId) &&
+      allow create: if isValidId(reportId) &&
         isValidSessionReportDoc(incoming()) &&
         incoming().id == reportId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
-      allow update: if isSignedIn() &&
-        isValidId(reportId) &&
+      allow update: if isValidId(reportId) &&
         isValidSessionReportDoc(incoming()) &&
-        existing().ownerId == request.auth.uid &&
+        isValidOwnerKey(existing().ownerId) &&
         incoming().ownerId == existing().ownerId &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
@@ -228,7 +224,7 @@ service cloud.firestore {
           'updatedAt'
         ]);
 
-      allow delete: if isSignedIn() && isValidId(reportId) && existing().ownerId == request.auth.uid;
+      allow delete: if isValidId(reportId) && isValidOwnerKey(existing().ownerId);
     }
   }
 }

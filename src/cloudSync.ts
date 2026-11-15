@@ -22,12 +22,62 @@ import {
 
 const CHUNK_MAX_CHARS = 600000; // Strictly <= 750000 in firebase-blueprint.json & firestore.rules
 const REPORT_MAX_CHARS = 800000; // Strictly <= 850000 in firebase-blueprint.json & firestore.rules
+const SYNC_KEY_STORAGE = 'curivn_cloud_sync_key';
+const DEFAULT_TEACHER_SYNC_KEY = 'quangminh1485';
 
 function sanitizeId(rawId: string): string {
   const clean = (rawId || '')
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 120);
   return clean || 'doc_' + Math.random().toString(36).slice(2, 10);
+}
+
+export function normalizeSyncKey(rawInput: string): string {
+  const trimmed = (rawInput || '').trim().toLowerCase();
+  if (!trimmed) return '';
+  const cleaned = trimmed
+    .replace(/@gmail\.com$/i, '')
+    .replace(/[^a-z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 80);
+  if (cleaned.length < 3) return '';
+  return cleaned;
+}
+
+export function getSavedSyncKey(): string {
+  try {
+    const stored = localStorage.getItem(SYNC_KEY_STORAGE);
+    if (stored === null) {
+      localStorage.setItem(SYNC_KEY_STORAGE, DEFAULT_TEACHER_SYNC_KEY);
+      return DEFAULT_TEACHER_SYNC_KEY;
+    }
+    return stored || DEFAULT_TEACHER_SYNC_KEY;
+  } catch {
+    return DEFAULT_TEACHER_SYNC_KEY;
+  }
+}
+
+export function setSavedSyncKey(rawKey: string): string {
+  const norm = normalizeSyncKey(rawKey) || DEFAULT_TEACHER_SYNC_KEY;
+  try {
+    localStorage.setItem(SYNC_KEY_STORAGE, norm);
+  } catch {
+    // ignore storage errors
+  }
+  return norm;
+}
+
+export function getActiveCloudOwnerId(): string | null {
+  const savedKey = getSavedSyncKey();
+  if (savedKey && savedKey.length >= 3) {
+    return `sync_${savedKey}`;
+  }
+  return `sync_${DEFAULT_TEACHER_SYNC_KEY}`;
+}
+
+export function getActiveCloudLabel(): string | null {
+  return getSavedSyncKey() || DEFAULT_TEACHER_SYNC_KEY;
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -101,11 +151,12 @@ export function deserializeLessonWithMedia(jsonStr: string): any {
 }
 
 export async function cloudSaveLesson(lesson: any): Promise<void> {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
+  const ownerId = getActiveCloudOwnerId();
+  if (!ownerId) return;
 
-  const lessonId = sanitizeId(lesson.id || Math.random().toString(36).slice(2, 10));
-  const fullJson = await serializeLessonWithMedia({ ...lesson, id: lessonId });
+  const rawId = sanitizeId(lesson.id || Math.random().toString(36).slice(2, 10));
+  const docId = sanitizeId(`${ownerId}_${rawId}`);
+  const fullJson = await serializeLessonWithMedia({ ...lesson, id: rawId });
   const chunks: string[] = [];
   for (let i = 0; i < fullJson.length; i += CHUNK_MAX_CHARS) {
     chunks.push(fullJson.slice(i, i + CHUNK_MAX_CHARS));
@@ -116,8 +167,8 @@ export async function cloudSaveLesson(lesson: any): Promise<void> {
   const safeChunks = chunks.slice(0, 200);
   const updatedAtMs = lesson.updatedAt ? Date.parse(lesson.updatedAt) || Date.now() : Date.now();
 
-  const lessonPath = `lessons/${lessonId}`;
-  const lessonRef = doc(db, 'lessons', lessonId);
+  const lessonPath = `lessons/${docId}`;
+  const lessonRef = doc(db, 'lessons', docId);
 
   let existingSnap;
   try {
@@ -143,8 +194,8 @@ export async function cloudSaveLesson(lesson: any): Promise<void> {
       });
     } else {
       await setDoc(lessonRef, {
-        id: lessonId,
-        ownerId: user.uid,
+        id: docId,
+        ownerId,
         ...metaFields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -154,11 +205,10 @@ export async function cloudSaveLesson(lesson: any): Promise<void> {
     handleFirestoreError(error, existingSnap?.exists() ? OperationType.UPDATE : OperationType.CREATE, lessonPath);
   }
 
-  // Write chunks
   for (let idx = 0; idx < safeChunks.length; idx++) {
     const chunkId = `chunk_${idx}`;
-    const chunkPath = `lessons/${lessonId}/chunks/${chunkId}`;
-    const chunkRef = doc(db, 'lessons', lessonId, 'chunks', chunkId);
+    const chunkPath = `lessons/${docId}/chunks/${chunkId}`;
+    const chunkRef = doc(db, 'lessons', docId, 'chunks', chunkId);
     let existingChunk;
     try {
       existingChunk = await getDoc(chunkRef);
@@ -175,8 +225,8 @@ export async function cloudSaveLesson(lesson: any): Promise<void> {
         });
       } else {
         await setDoc(chunkRef, {
-          ownerId: user.uid,
-          lessonId,
+          ownerId,
+          lessonId: docId,
           idx,
           data: safeChunks[idx],
           createdAt: serverTimestamp(),
@@ -190,35 +240,34 @@ export async function cloudSaveLesson(lesson: any): Promise<void> {
 }
 
 export async function cloudDeleteLesson(rawLessonId: string): Promise<void> {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
-  const lessonId = sanitizeId(rawLessonId);
-  const chunksCol = collection(db, 'lessons', lessonId, 'chunks');
-  try {
-    const q = query(chunksCol, where('ownerId', '==', user.uid));
-    const snap = await getDocs(q);
-    for (const d of snap.docs) {
-      await deleteDoc(d.ref);
+  const ownerId = getActiveCloudOwnerId();
+  if (!ownerId) return;
+  const rawId = sanitizeId(rawLessonId);
+  const docIdsToTry = [sanitizeId(`${ownerId}_${rawId}`), rawId];
+
+  for (const docId of docIdsToTry) {
+    const chunksCol = collection(db, 'lessons', docId, 'chunks');
+    try {
+      const q = query(chunksCol, where('ownerId', '==', ownerId));
+      const snap = await getDocs(q);
+      for (const d of snap.docs) {
+        await deleteDoc(d.ref);
+      }
+      await deleteDoc(doc(db, 'lessons', docId));
+    } catch {
+      // ignore if doc does not exist
     }
-  } catch {
-    // ignore chunk cleanup errors
-  }
-  const lessonPath = `lessons/${lessonId}`;
-  try {
-    await deleteDoc(doc(db, 'lessons', lessonId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, lessonPath);
   }
 }
 
 export async function cloudSaveReport(report: any): Promise<void> {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified || !report?.id) return;
+  const ownerId = getActiveCloudOwnerId();
+  if (!ownerId || !report?.id) return;
 
-  const reportId = sanitizeId(report.id);
+  const rawId = sanitizeId(report.id);
+  const docId = sanitizeId(`${ownerId}_${rawId}`);
   let payloadJson = JSON.stringify(report);
   if (payloadJson.length > REPORT_MAX_CHARS) {
-    // Trim oversize data-URL drawings so report fits within Firestore 1MB limit
     const trimmed = {
       ...report,
       slides: (report.slides || []).map((sl: any) => ({
@@ -241,8 +290,8 @@ export async function cloudSaveReport(report: any): Promise<void> {
   }
 
   const updatedAtMs = report.updatedAt ? Date.parse(report.updatedAt) || Date.now() : Date.now();
-  const reportPath = `reports/${reportId}`;
-  const reportRef = doc(db, 'reports', reportId);
+  const reportPath = `reports/${docId}`;
+  const reportRef = doc(db, 'reports', docId);
 
   let existingSnap;
   try {
@@ -267,8 +316,8 @@ export async function cloudSaveReport(report: any): Promise<void> {
       });
     } else {
       await setDoc(reportRef, {
-        id: reportId,
-        ownerId: user.uid,
+        id: docId,
+        ownerId,
         ...fields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -280,14 +329,16 @@ export async function cloudSaveReport(report: any): Promise<void> {
 }
 
 export async function cloudDeleteReport(rawReportId: string): Promise<void> {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
-  const reportId = sanitizeId(rawReportId);
-  const reportPath = `reports/${reportId}`;
-  try {
-    await deleteDoc(doc(db, 'reports', reportId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, reportPath);
+  const ownerId = getActiveCloudOwnerId();
+  if (!ownerId) return;
+  const rawId = sanitizeId(rawReportId);
+  const docIdsToTry = [sanitizeId(`${ownerId}_${rawId}`), rawId];
+  for (const docId of docIdsToTry) {
+    try {
+      await deleteDoc(doc(db, 'reports', docId));
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -297,20 +348,28 @@ export async function cloudSyncAll(
   saveLocalLesson: (l: any) => Promise<void>,
   saveLocalReport: (r: any) => Promise<void>
 ): Promise<{ lessons: any[]; reports: any[] }> {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified) {
+  const ownerId = getActiveCloudOwnerId();
+  if (!ownerId) {
     return { lessons: localLessons, reports: localReports };
   }
+
+  const stripPrefix = (docId: string) => {
+    const prefix = `${ownerId}_`;
+    return docId.startsWith(prefix) ? docId.slice(prefix.length) : docId;
+  };
 
   // 1. Fetch remote lessons metadata
   const lessonsMap = new Map<string, any>();
   for (const l of localLessons) {
-    if (l?.id) lessonsMap.set(sanitizeId(l.id), { ...l, id: sanitizeId(l.id) });
+    if (l?.id) {
+      const cleanLocalId = sanitizeId(l.id);
+      lessonsMap.set(cleanLocalId, { ...l, id: cleanLocalId });
+    }
   }
 
   let remoteLessonDocs: any[] = [];
   try {
-    const qLessons = query(collection(db, 'lessons'), where('ownerId', '==', user.uid));
+    const qLessons = query(collection(db, 'lessons'), where('ownerId', '==', ownerId));
     const snap = await getDocs(qLessons);
     remoteLessonDocs = snap.docs.map(d => d.data());
   } catch (error) {
@@ -319,18 +378,18 @@ export async function cloudSyncAll(
 
   const remoteLessonIds = new Set<string>();
   for (const meta of remoteLessonDocs) {
-    const lid = meta.id;
+    const docId = meta.id;
+    const lid = stripPrefix(docId);
     remoteLessonIds.add(lid);
     const local = lessonsMap.get(lid);
     const localMs = local?.updatedAt ? Date.parse(local.updatedAt) || 0 : 0;
     const remoteMs = typeof meta.updatedAtMs === 'number' ? meta.updatedAtMs : 0;
 
     if (!local || remoteMs > localMs + 1000) {
-      // Download chunks from cloud
       try {
         const qChunks = query(
-          collection(db, 'lessons', lid, 'chunks'),
-          where('ownerId', '==', user.uid)
+          collection(db, 'lessons', docId, 'chunks'),
+          where('ownerId', '==', ownerId)
         );
         const chunkSnap = await getDocs(qChunks);
         const sortedChunks = chunkSnap.docs
@@ -343,6 +402,7 @@ export async function cloudSyncAll(
           .join('');
         if (joined) {
           const hydrated = deserializeLessonWithMedia(joined);
+          hydrated.id = lid;
           lessonsMap.set(lid, hydrated);
           await saveLocalLesson(hydrated);
         }
@@ -354,7 +414,6 @@ export async function cloudSyncAll(
     }
   }
 
-  // Upload local lessons that do not exist in cloud yet
   for (const [lid, local] of lessonsMap.entries()) {
     if (!remoteLessonIds.has(lid)) {
       await cloudSaveLesson(local);
@@ -364,12 +423,15 @@ export async function cloudSyncAll(
   // 2. Fetch remote session reports
   const reportsMap = new Map<string, any>();
   for (const r of localReports) {
-    if (r?.id) reportsMap.set(sanitizeId(r.id), { ...r, id: sanitizeId(r.id) });
+    if (r?.id) {
+      const cleanId = sanitizeId(r.id);
+      reportsMap.set(cleanId, { ...r, id: cleanId });
+    }
   }
 
   let remoteReportDocs: any[] = [];
   try {
-    const qReports = query(collection(db, 'reports'), where('ownerId', '==', user.uid));
+    const qReports = query(collection(db, 'reports'), where('ownerId', '==', ownerId));
     const snap = await getDocs(qReports);
     remoteReportDocs = snap.docs.map(d => d.data());
   } catch (error) {
@@ -378,7 +440,8 @@ export async function cloudSyncAll(
 
   const remoteReportIds = new Set<string>();
   for (const rdoc of remoteReportDocs) {
-    const rid = rdoc.id;
+    const docId = rdoc.id;
+    const rid = stripPrefix(docId);
     remoteReportIds.add(rid);
     const local = reportsMap.get(rid);
     const localMs = local?.updatedAt ? Date.parse(local.updatedAt) || 0 : 0;
@@ -388,6 +451,7 @@ export async function cloudSyncAll(
       try {
         const parsed = JSON.parse(rdoc.payloadJson);
         if (parsed && parsed.id) {
+          parsed.id = rid;
           reportsMap.set(rid, parsed);
           await saveLocalReport(parsed);
         }
@@ -413,6 +477,43 @@ export async function cloudSyncAll(
   );
 
   return { lessons: mergedLessons, reports: mergedReports };
+}
+
+export async function exportBackupJson(lessons: any[], reports: any[]): Promise<void> {
+  const serializedLessons: string[] = [];
+  for (const l of lessons) {
+    serializedLessons.push(await serializeLessonWithMedia(l));
+  }
+  const payload = JSON.stringify({
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    lessons: serializedLessons,
+    reports,
+  });
+  const blob = new Blob([payload], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `lop-hoc-truc-tuyen-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+export async function importBackupJson(file: File): Promise<{ lessons: any[]; reports: any[] }> {
+  const text = await file.text();
+  const parsed = JSON.parse(text);
+  const lessons: any[] = [];
+  if (Array.isArray(parsed?.lessons)) {
+    for (const item of parsed.lessons) {
+      if (typeof item === 'string') {
+        lessons.push(deserializeLessonWithMedia(item));
+      } else if (item && typeof item === 'object') {
+        lessons.push(item);
+      }
+    }
+  }
+  const reports: any[] = Array.isArray(parsed?.reports) ? parsed.reports : [];
+  return { lessons, reports };
 }
 
 export {
