@@ -1,0 +1,6 @@
+{
+  "name": "Lớp học trực tuyến",
+  "description": "Lớp học trực tuyến – Nền tảng bài giảng tương tác và thống kê lớp học",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
