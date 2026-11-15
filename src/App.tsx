@@ -233,8 +233,34 @@ export default function App() {
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = useState('');
   const [revealedSlides, setRevealedSlides] = useState<Record<number, boolean>>({});
-  const [bestDrawings, setBestDrawings] = useState<Record<number, Record<string, boolean>>>({});
-  const [bestAnswers, setBestAnswers] = useState<Record<number, Record<string, boolean>>>({});
+  const [votingActive, setVotingActive] = useState<Record<number, boolean>>({});
+  const [studentVotes, setStudentVotes] = useState<Record<number, Record<string, string>>>({});
+  const [studentVotingActive, setStudentVotingActive] = useState(false);
+  const [studentSubmissions, setStudentSubmissions] = useState<any[]>([]);
+  const [studentMyVote, setStudentMyVote] = useState<string | null>(null);
+
+  const getSlideVoteTally = (sIdx: number) => {
+    const tally: Record<string, number> = {};
+    const slideMap = studentVotes[sIdx] || {};
+    for (const targetSid of Object.values(slideMap)) {
+      tally[targetSid] = (tally[targetSid] || 0) + 1;
+    }
+    return tally;
+  };
+
+  const startVotingPhase = () => {
+    const curIdx = slideIdxRef.current;
+    const r = Object.entries(responsesRef.current[curIdx] || {}).map(([sid, val]) => ({
+      sid,
+      n: val.n,
+      cls: val.cls,
+      v: val.v,
+    }));
+    setVotingActive(prev => ({ ...prev, [curIdx]: true }));
+    connectionsRef.current.forEach(c => {
+      if (c.open) c.send({ t: 'voting_start', slideIdx: curIdx, submissions: r });
+    });
+  };
 
   const forceRevealResults = () => {
     setRevealedSlides(prev => ({ ...prev, [slideIdxRef.current]: true }));
@@ -244,21 +270,7 @@ export default function App() {
     hostTimerLeftRef.current = 0;
   };
 
-  const toggleBestDrawing = (sid: string) => {
-    const curIdx = slideIdxRef.current;
-    setBestDrawings(prev => {
-      const curMap = prev[curIdx] || {};
-      return { ...prev, [curIdx]: { ...curMap, [sid]: !curMap[sid] } };
-    });
-  };
 
-  const toggleBestAnswer = (sid: string) => {
-    const curIdx = slideIdxRef.current;
-    setBestAnswers(prev => {
-      const curMap = prev[curIdx] || {};
-      return { ...prev, [curIdx]: { ...curMap, [sid]: !curMap[sid] } };
-    });
-  };
 
   // Student State
   const [joinCodeInput, setJoinCodeInput] = useState('');
@@ -1978,6 +1990,16 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
       responsesRef.current = nextResponses;
       setResponses(nextResponses);
       syncLiveSessionReport('live');
+    } else if (d.t === 'vote') {
+      const sIdx = typeof d.slideIdx === 'number' ? d.slideIdx : curIdx;
+      const tSid = d.targetSid;
+      const voterId = d.s || c._sid;
+      if (tSid && voterId) {
+        setStudentVotes(prev => {
+          const slideMap = prev[sIdx] || {};
+          return { ...prev, [sIdx]: { ...slideMap, [voterId]: tSid } };
+        });
+      }
     } else if (d.t === 'need') {
       const b = curLesson.M && curLesson.M[d.id];
       if (b) {
@@ -1994,6 +2016,10 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
     hostAnimStepRef.current = 0;
     setShowScoreboard(false);
     setAiFeedbackText('');
+    setVotingActive({});
+    setStudentVotingActive(false);
+    setStudentSubmissions([]);
+    setStudentMyVote(null);
     const timerInfo = initTimerForSlide(nextIdx, teacherStartedLiveRef.current);
     const shouldReveal = timerInfo.remainingSec === null || timerInfo.remainingSec <= 0;
     setRevealedSlides(prev => ({ ...prev, [nextIdx]: shouldReveal }));
@@ -2353,10 +2379,15 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
         }
       } else if (d.t === 'scores') {
         setStudentMyScore((d.sc && d.sc[studentSid]) || 0);
+      } else if (d.t === 'voting_start') {
+        setStudentVotingActive(true);
+        setStudentSubmissions(Array.isArray(d.submissions) ? d.submissions : []);
+        setStudentMyVote(null);
       } else if (d.t === 'media') {
         setMediaCache(prev => ({ ...prev, [d.id]: URL.createObjectURL(new Blob([d.data], { type: d.mt })) }));
       }
     });
+
     conn.on('close', () => {
       setJoinMsg('Mất kết nối – đang thử kết nối lại...');
       askedMediaRef.current = {};
@@ -2364,6 +2395,18 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
         if (p && !p.destroyed && studentPeerRef.current === p) hookStudentConnection(p, code);
       }, 3000);
     });
+  };
+
+  const sendStudentVote = (targetSid: string) => {
+    if (!studentConnRef.current || !studentConnRef.current.open) return;
+    const curIdx = studentCurState?.idx ?? slideIdxRef.current;
+    studentConnRef.current.send({
+      t: 'vote',
+      slideIdx: curIdx,
+      targetSid,
+      s: studentSid,
+    });
+    setStudentMyVote(targetSid);
   };
 
   const saveStudentProfileLocal = (name: string, className: string) => {
@@ -3775,91 +3818,103 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                       );
                     }
 
-                    if (s.type === 'draw') {
-                      const bestMap = bestDrawings[slideIdx] || {};
+                    if (s.type === 'draw' || s.type === 'open') {
+                      const tally = getSlideVoteTally(slideIdx);
+                      const isVotingOpen = !!votingActive[slideIdx];
+                      const sortedSubmissions = r.map((a, j) => {
+                        const sid = Object.keys(responses[slideIdx] || {})[j] || String(j);
+                        const votesCount = tally[sid] || 0;
+                        return { ...a, sid, votesCount };
+                      }).sort((x, y) => y.votesCount - x.votesCount);
+
                       return r.length ? (
-                        <div className="space-y-4">
-                          {Object.entries(bestMap).some(([_, isBest]) => isBest) && (
-                            <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-2xl flex items-center gap-2 text-amber-800 dark:text-amber-200 font-bold text-sm">
-                              <Trophy className="w-5 h-5 text-amber-500 fill-current animate-bounce" />
-                              <span>Đã vinh danh bức vẽ xuất sắc nhất trong lớp!</span>
+                        <div className="space-y-6">
+                          <div className="flex justify-between items-center flex-wrap gap-3 p-4 bg-purple-50 dark:bg-purple-950/40 rounded-2xl border border-purple-200 dark:border-purple-800">
+                            <div>
+                              <h4 className="font-bold text-base">🗳️ Vòng bình chọn trong lớp</h4>
+                              <p className="text-xs text-stone-500">
+                                {isVotingOpen ? 'Học sinh đang bình chọn bài vẽ/câu hay nhất trên điện thoại...' : 'Hết thời gian! Bấm bắt đầu để học sinh bình chọn bài đẹp/hay nhất.'}
+                              </p>
+                            </div>
+                            {!isVotingOpen ? (
+                              <button
+                                onClick={startVotingPhase}
+                                className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow transition flex items-center gap-2"
+                              >
+                                <Award className="w-4 h-4" /> Bắt đầu bình chọn
+                              </button>
+                            ) : (
+                              <span className="px-4 py-2 bg-emerald-100 dark:bg-emerald-950 text-emerald-700 font-bold rounded-xl text-xs flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Đang mở bình chọn
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Top 3 podium highlight if votes exist */}
+                          {sortedSubmissions.length > 0 && sortedSubmissions[0].votesCount > 0 && (
+                            <div className="space-y-2">
+                              <h5 className="font-extrabold text-sm text-stone-600 dark:text-slate-400 flex items-center gap-1.5">
+                                <Trophy className="w-4 h-4 text-amber-500 fill-current" /> Top 3 bức tranh / câu trả lời được yêu thích nhất:
+                              </h5>
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                {sortedSubmissions.slice(0, 3).map((item, rank) => {
+                                  if (item.votesCount === 0) return null;
+                                  const medals = ['🥇 Top 1', '🥈 Top 2', '🥉 Top 3'];
+                                  const borderColors = ['border-amber-400 bg-amber-50/40 ring-2 ring-amber-400 shadow-lg', 'border-slate-300 bg-slate-50/40 shadow', 'border-amber-700/40 bg-amber-900/10 shadow'];
+                                  return (
+                                    <div key={rank} className={`p-4 rounded-2xl border-2 ${borderColors[rank]} space-y-2 text-center relative`}>
+                                      <div className="font-black text-xs px-2 py-0.5 bg-amber-500 text-white rounded-full inline-block shadow">{medals[rank]} ({item.votesCount} lượt)</div>
+                                      <div className="font-bold text-xs truncate">{item.n}</div>
+                                      {s.type === 'draw' && String(item.v).startsWith('data:image/jpeg') ? (
+                                        <img src={item.v} alt="Top drawing" className="w-full h-28 object-contain bg-white rounded-lg border border-stone-200 mx-auto" />
+                                      ) : (
+                                        <div className="text-sm italic font-medium">"{item.v}"</div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </div>
                           )}
-                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                            {r.map((a, j) => {
-                              const sid = Object.keys(responses[slideIdx] || {})[j] || String(j);
-                              const isBest = !!bestMap[sid];
-                              return String(a.v).startsWith('data:image/jpeg') ? (
-                                <div key={j} className={`bg-stone-50 dark:bg-slate-950 border ${isBest ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg' : 'border-stone-200 dark:border-slate-800'} p-3 rounded-2xl space-y-2 relative`}>
-                                  {isBest && (
-                                    <div className="absolute -top-3 -right-2 px-2.5 py-0.5 bg-amber-500 text-white text-[11px] font-black rounded-full shadow flex items-center gap-1">
-                                      ⭐ Hình đẹp nhất
+
+                          {/* Full submission list */}
+                          <div className={s.type === 'draw' ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4" : "grid grid-cols-1 md:grid-cols-2 gap-3"}>
+                            {sortedSubmissions.map((item, j) => {
+                              const rank = item.votesCount > 0 ? sortedSubmissions.findIndex(x => x.votesCount === item.votesCount) : -1;
+                              const isTop3 = rank >= 0 && rank < 3 && item.votesCount > 0;
+                              return s.type === 'draw' ? (
+                                <div key={j} className={`bg-stone-50 dark:bg-slate-950 border ${isTop3 ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg' : 'border-stone-200 dark:border-slate-800'} p-3 rounded-2xl space-y-2 relative`}>
+                                  {isTop3 && (
+                                    <div className="absolute -top-3 -right-2 px-2.5 py-0.5 bg-amber-500 text-white text-[11px] font-black rounded-full shadow">
+                                      {rank === 0 ? '🥇 Top 1' : rank === 1 ? '🥈 Top 2' : '🥉 Top 3'} ({item.votesCount})
                                     </div>
                                   )}
-                                  <img src={a.v} alt="Drawing" className="w-full h-40 object-contain bg-white rounded-xl border border-stone-200" />
+                                  <img src={item.v} alt="Drawing" className="w-full h-40 object-contain bg-white rounded-xl border border-stone-200" />
                                   <div className="text-sm font-bold truncate">
-                                    {a.n} {a.cls && <span className="text-xs font-semibold text-purple-600">({a.cls})</span>}
+                                    {item.n} {item.cls && <span className="text-xs font-semibold text-purple-600">({item.cls})</span>}
                                   </div>
-                                  <div className="flex items-center gap-1 flex-wrap">
-                                    <button onClick={() => gradeAnswer(j, 1)} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs font-bold">✓ 1đ</button>
-                                    <button onClick={() => gradeAnswer(j, 0.5)} className="px-2 py-1 bg-purple-200 text-purple-800 rounded-lg text-xs font-bold">½</button>
-                                    <button onClick={() => gradeAnswer(j, 0)} className="px-2 py-1 border border-stone-300 rounded-lg text-xs font-bold">✗</button>
-                                    <button
-                                      onClick={() => toggleBestDrawing(sid)}
-                                      className={`px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 ${isBest ? 'bg-amber-500 text-white' : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'}`}
-                                      title="Chọn làm hình vẽ đẹp nhất"
-                                    >
-                                      ⭐ {isBest ? 'Đã chọn' : 'Hình đẹp'}
-                                    </button>
-                                    {a.g !== undefined && <span className="text-xs font-bold text-emerald-600 ml-auto">{a.g}đ</span>}
+                                  <div className="flex items-center justify-between text-xs font-bold text-purple-600 pt-1">
+                                    <span>{item.votesCount} bình chọn</span>
+                                    {item.g !== undefined ? <span className="text-emerald-600">{item.g}đ</span> : (
+                                      <button onClick={() => gradeAnswer(j, 1)} className="px-2 py-0.5 bg-purple-600 text-white rounded text-[11px]">Chấm 1đ</button>
+                                    )}
                                   </div>
                                 </div>
-                              ) : null;
-                            })}
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-stone-400 italic py-6 text-center">Đang chờ học sinh gửi bản vẽ từ điện thoại...</p>
-                      );
-                    }
-
-                    if (s.type === 'open') {
-                      const bestMap = bestAnswers[slideIdx] || {};
-                      return r.length ? (
-                        <div className="space-y-4">
-                          {Object.entries(bestMap).some(([_, isBest]) => isBest) && (
-                            <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-2xl flex items-center gap-2 text-amber-800 dark:text-amber-200 font-bold text-sm">
-                              <Trophy className="w-5 h-5 text-amber-500 fill-current animate-bounce" />
-                              <span>Đã vinh danh câu trả lời hay nhất trong lớp!</span>
-                            </div>
-                          )}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {r.map((a, j) => {
-                              const sid = Object.keys(responses[slideIdx] || {})[j] || String(j);
-                              const isBest = !!bestMap[sid];
-                              return (
-                                <div key={j} className={`p-4 bg-purple-50/60 dark:bg-purple-950/20 border ${isBest ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg' : 'border-purple-100 dark:border-purple-900/40'} rounded-2xl space-y-2 relative`}>
-                                  {isBest && (
-                                    <div className="absolute -top-3 right-3 px-2.5 py-0.5 bg-amber-500 text-white text-[11px] font-black rounded-full shadow flex items-center gap-1">
-                                      🏆 Câu hay nhất
+                              ) : (
+                                <div key={j} className={`p-4 bg-purple-50/60 dark:bg-purple-950/20 border ${isTop3 ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg' : 'border-purple-100 dark:border-purple-900/40'} rounded-2xl space-y-2 relative`}>
+                                  {isTop3 && (
+                                    <div className="absolute -top-3 right-3 px-2.5 py-0.5 bg-amber-500 text-white text-[11px] font-black rounded-full shadow">
+                                      {rank === 0 ? '🥇 Top 1' : rank === 1 ? '🥈 Top 2' : '🥉 Top 3'} ({item.votesCount})
                                     </div>
                                   )}
                                   <div className="text-lg">
-                                    <b>{a.n}{a.cls ? ` (${a.cls})` : ''}:</b> {a.v}
+                                    <b>{item.n}{item.cls ? ` (${item.cls})` : ''}:</b> {item.v}
                                   </div>
-                                  <div className="flex items-center gap-2 text-xs flex-wrap">
-                                    <button onClick={() => gradeAnswer(j, 1)} className="px-2.5 py-1 bg-purple-600 text-white rounded-lg font-semibold">✓ 1đ</button>
-                                    <button onClick={() => gradeAnswer(j, 0.5)} className="px-2.5 py-1 bg-purple-200 text-purple-800 rounded-lg font-semibold">½</button>
-                                    <button onClick={() => gradeAnswer(j, 0)} className="px-2.5 py-1 border border-stone-300 rounded-lg font-semibold">✗ 0đ</button>
-                                    <button
-                                      onClick={() => toggleBestAnswer(sid)}
-                                      className={`px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1 ${isBest ? 'bg-amber-500 text-white' : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'}`}
-                                      title="Chọn làm câu trả lời hay nhất"
-                                    >
-                                      🏆 {isBest ? 'Đã chọn' : 'Câu hay'}
-                                    </button>
-                                    {a.g !== undefined && <span className="font-bold text-emerald-600">→ {a.g} điểm</span>}
-                                    <button onClick={() => deleteAnswer(j)} className="text-stone-400 hover:text-red-500 ml-auto">✕ Xóa</button>
+                                  <div className="flex items-center justify-between text-xs font-bold text-purple-600 pt-1">
+                                    <span>{item.votesCount} bình chọn</span>
+                                    {item.g !== undefined ? <span className="text-emerald-600">{item.g} điểm</span> : (
+                                      <button onClick={() => gradeAnswer(j, 1)} className="px-2.5 py-0.5 bg-purple-600 text-white rounded text-[11px]">Chấm 1đ</button>
+                                    )}
                                   </div>
                                 </div>
                               );
@@ -3867,7 +3922,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                           </div>
                         </div>
                       ) : (
-                        <p className="text-stone-400 italic py-6 text-center">Đang chờ câu trả lời của học sinh...</p>
+                        <p className="text-stone-400 italic py-6 text-center">Đang chờ học sinh gửi bài...</p>
                       );
                     }
 
@@ -4334,7 +4389,36 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                         )}
                         {!s.pptx && <h3 className="text-xl sm:text-2xl font-bold">{s.q}</h3>}
 
-                        {mySubmittedVal !== undefined ? (
+                        {studentVotingActive && (s.type === 'draw' || s.type === 'open') ? (
+                          <div className="space-y-4 py-2">
+                            <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-2xl text-amber-800 dark:text-amber-200 font-bold text-center space-y-1">
+                              <div className="text-base">🗳️ Vòng bình chọn bài xuất sắc!</div>
+                              <div className="text-xs font-normal">Hãy bấm chọn bức tranh hoặc câu trả lời đẹp/hay nhất của bạn bè:</div>
+                            </div>
+                            <div className="space-y-3">
+                              {studentSubmissions.map((item: any, idx: number) => {
+                                const isMyVote = studentMyVote === item.sid;
+                                return (
+                                  <div key={idx} className={`p-4 rounded-2xl border transition ${isMyVote ? 'border-purple-600 bg-purple-50 dark:bg-purple-950/60 ring-2 ring-purple-500' : 'border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900'} space-y-2`}>
+                                    <div className="text-sm font-bold text-stone-700 dark:text-slate-300">{item.n}</div>
+                                    {s.type === 'draw' && String(item.v).startsWith('data:image/jpeg') ? (
+                                      <img src={item.v} alt="Peer submission" className="w-full h-36 object-contain bg-white rounded-xl border border-stone-200 mx-auto" />
+                                    ) : (
+                                      <div className="text-base font-medium">"{item.v}"</div>
+                                    )}
+                                    <button
+                                      onClick={() => sendStudentVote(item.sid)}
+                                      className={`w-full py-2.5 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1.5 ${isMyVote ? 'bg-purple-600 text-white shadow' : 'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-stone-300 hover:bg-purple-100'}`}
+                                    >
+                                      {isMyVote ? <Check className="w-4 h-4" /> : <Award className="w-4 h-4" />}
+                                      {isMyVote ? 'Đã bình chọn bài này' : 'Bình chọn bài này'}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : mySubmittedVal !== undefined ? (
                           <div className="p-4 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 rounded-xl text-emerald-700 dark:text-emerald-300 font-medium">
                             Em đã gửi câu trả lời. Chờ giáo viên chuyển slide...
                           </div>
