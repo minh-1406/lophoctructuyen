@@ -9,7 +9,7 @@ import {
   Check, X, Trophy, Play, Upload, FileText, QrCode, RefreshCw, BarChart2, 
   HelpCircle, MessageSquare, Cloud, Sliders, Edit3, Image as ImageIcon, Info,
   Share2, Award, ChevronRight, CheckCircle2, AlertCircle, Save, FolderOpen,
-  Clock, Pause, RotateCcw, Maximize2, Minimize2
+  Clock, Pause, RotateCcw, Maximize2, Minimize2, Eye
 } from 'lucide-react';
 import {
   PptxSlideData,
@@ -232,6 +232,33 @@ export default function App() {
   const [showCloudModal, setShowCloudModal] = useState(false);
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = useState('');
+  const [revealedSlides, setRevealedSlides] = useState<Record<number, boolean>>({});
+  const [bestDrawings, setBestDrawings] = useState<Record<number, Record<string, boolean>>>({});
+  const [bestAnswers, setBestAnswers] = useState<Record<number, Record<string, boolean>>>({});
+
+  const forceRevealResults = () => {
+    setRevealedSlides(prev => ({ ...prev, [slideIdxRef.current]: true }));
+    setHostTimerRunning(false);
+    hostTimerRunningRef.current = false;
+    setHostTimerLeft(0);
+    hostTimerLeftRef.current = 0;
+  };
+
+  const toggleBestDrawing = (sid: string) => {
+    const curIdx = slideIdxRef.current;
+    setBestDrawings(prev => {
+      const curMap = prev[curIdx] || {};
+      return { ...prev, [curIdx]: { ...curMap, [sid]: !curMap[sid] } };
+    });
+  };
+
+  const toggleBestAnswer = (sid: string) => {
+    const curIdx = slideIdxRef.current;
+    setBestAnswers(prev => {
+      const curMap = prev[curIdx] || {};
+      return { ...prev, [curIdx]: { ...curMap, [sid]: !curMap[sid] } };
+    });
+  };
 
   // Student State
   const [joinCodeInput, setJoinCodeInput] = useState('');
@@ -1561,6 +1588,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
     if (hostTimerLeft <= 0) {
       setHostTimerRunning(false);
       hostTimerRunningRef.current = false;
+      setRevealedSlides(prev => ({ ...prev, [slideIdxRef.current]: true }));
       broadcastTimer(slideIdxRef.current, 0, hostTimerTotalRef.current, false);
       return;
     }
@@ -1572,6 +1600,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
         hostTimerLeftRef.current = 0;
         setHostTimerRunning(false);
         hostTimerRunningRef.current = false;
+        setRevealedSlides(prev => ({ ...prev, [slideIdxRef.current]: true }));
         broadcastTimer(slideIdxRef.current, 0, hostTimerTotalRef.current, false);
       } else {
         const next = cur - 1;
@@ -1966,6 +1995,8 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
     setShowScoreboard(false);
     setAiFeedbackText('');
     const timerInfo = initTimerForSlide(nextIdx, teacherStartedLiveRef.current);
+    const shouldReveal = timerInfo.remainingSec === null || timerInfo.remainingSec <= 0;
+    setRevealedSlides(prev => ({ ...prev, [nextIdx]: shouldReveal }));
     const scores = calculateScores().t;
     connectionsRef.current.forEach(c => {
       if (c.open) c.send({ t: 'scores', sc: scores });
@@ -2631,30 +2662,17 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
               <button onClick={loadDashboard} className="px-4 py-2 text-sm font-semibold rounded-xl bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-300 hover:bg-purple-100 transition flex items-center gap-1.5">
                 <BookOpen className="w-4 h-4" /> Bảng điều khiển
               </button>
+              <button
+                onClick={() => setShowCloudModal(true)}
+                title="Cài đặt đồng bộ đám mây"
+                className="px-3.5 py-2 text-sm font-semibold rounded-xl bg-purple-50 dark:bg-purple-950/50 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-100 transition flex items-center gap-1.5"
+              >
+                <Cloud className="w-4 h-4 text-purple-600" />
+                <span>Đồng bộ đám mây</span>
+              </button>
               <button onClick={() => { newLesson(); setView('build'); }} className="px-4 py-2 text-sm font-semibold rounded-xl bg-purple-600 text-white hover:bg-purple-700 shadow-sm transition flex items-center gap-1.5">
                 <Plus className="w-4 h-4" /> Tạo bài giảng
               </button>
-              {/* Inline Cloud Sync Box directly in Navbar (No popup needed) */}
-              <div className="flex items-center gap-1.5 bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 px-2.5 py-1 rounded-xl">
-                <Cloud className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
-                <input
-                  type="text"
-                  value={cloudKeyInput}
-                  onChange={e => setCloudKeyInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSaveCloudKeyAndSync()}
-                  placeholder="Mã đồng bộ (vd: quangminh1485)"
-                  title="Nhập chung 1 mã trên mọi máy tính / Vercel / Tivi để đồng bộ bài giảng"
-                  className="w-28 sm:w-36 !py-1 !px-2 text-xs font-bold bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-800 rounded-lg"
-                />
-                <button
-                  onClick={handleSaveCloudKeyAndSync}
-                  disabled={cloudSyncing}
-                  className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold rounded-lg transition flex items-center gap-1 shrink-0"
-                >
-                  <RefreshCw className={`w-3 h-3 ${cloudSyncing ? 'animate-spin' : ''}`} />
-                  {cloudSyncing ? 'Đang tải...' : 'Đồng bộ'}
-                </button>
-              </div>
             </div>
           </div>
         </nav>
@@ -2672,11 +2690,11 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
               <p className="text-lg text-stone-600 dark:text-slate-400">
                 Giáo viên dẫn dắt, cả lớp cùng đọc, viết và thảo luận trên điện thoại. Học sinh quét mã QR là vào lớp, không cần tài khoản rườm rà.
               </p>
-              <div className="flex justify-center gap-3 pt-2">
+              <div className="flex justify-center gap-3 pt-2 flex-wrap">
                 <button onClick={loadDashboard} className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-lg shadow-purple-500/20 transition flex items-center gap-2">
                   <Play className="w-5 h-5 fill-current" /> Bắt đầu ngay
                 </button>
-                <button onClick={() => setView('join')} className="px-6 py-3 bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 hover:bg-purple-200 font-bold rounded-xl transition flex items-center gap-2">
+                <button onClick={() => setView('join')} className="px-6 py-3 bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-stone-300 hover:bg-stone-200 font-bold rounded-xl transition flex items-center gap-2">
                   <Users className="w-5 h-5" /> Tôi là học sinh
                 </button>
               </div>
@@ -2719,57 +2737,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
               </div>
             </div>
 
-            {/* Always-visible inline Cloud Sync & Backup bar in Dashboard */}
-            <div className="bg-sky-50/80 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900 p-4 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <div className="text-sm font-bold text-sky-900 dark:text-sky-200 flex items-center gap-2">
-                  <Cloud className="w-4 h-4 text-sky-600" />
-                  Đồng bộ Đám mây tự động giữa các máy tính, Vercel & Tivi
-                </div>
-                <p className="text-xs text-stone-600 dark:text-slate-400">
-                  Nhập cùng 1 Mã đồng bộ (mặc định: <span className="font-bold text-sky-700 dark:text-sky-300">quangminh1485</span>) trên mọi thiết bị để tự động tải đầy đủ bài giảng và thống kê.
-                </p>
-                {cloudSyncMsg && (
-                  <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 pt-0.5">
-                    ✓ {cloudSyncMsg}
-                  </p>
-                )}
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <input
-                  type="text"
-                  value={cloudKeyInput}
-                  onChange={e => setCloudKeyInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSaveCloudKeyAndSync()}
-                  placeholder="Mã đồng bộ (vd: quangminh1485)"
-                  className="w-44 !py-2 !px-3 text-xs font-bold bg-white dark:bg-slate-900 border border-sky-300 dark:border-sky-800 rounded-xl"
-                />
-                <button
-                  onClick={handleSaveCloudKeyAndSync}
-                  disabled={cloudSyncing}
-                  className="px-4 py-2 bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncing ? 'animate-spin' : ''}`} />
-                  {cloudSyncing ? 'Đang đồng bộ...' : 'Đồng bộ ngay'}
-                </button>
-                <button
-                  onClick={handleExportBackupFile}
-                  disabled={cloudSyncing}
-                  className="px-3 py-2 bg-white dark:bg-slate-900 border border-stone-300 dark:border-slate-700 hover:bg-stone-100 text-xs font-bold rounded-xl transition flex items-center gap-1.5"
-                >
-                  <Save className="w-3.5 h-3.5 text-purple-600" /> Xuất file
-                </button>
-                <label className="px-3 py-2 bg-white dark:bg-slate-900 border border-stone-300 dark:border-slate-700 hover:bg-stone-100 text-xs font-bold rounded-xl cursor-pointer transition flex items-center gap-1.5">
-                  <Upload className="w-3.5 h-3.5 text-emerald-600" /> Nhập file
-                  <input
-                    type="file"
-                    accept=".json,application/json"
-                    onChange={e => e.target.files?.[0] && handleImportBackupFile(e.target.files[0])}
-                    className="hidden"
-                  />
-                </label>
-              </div>
-            </div>
+
 
             <div className="space-y-4">
               <h3 className="text-lg font-bold text-stone-700 dark:text-slate-300">Bài giảng của tôi</h3>
@@ -3786,23 +3754,69 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                       return <p className={`${infoSize} whitespace-pre-line leading-relaxed break-words text-stone-700 dark:text-slate-300`}>{s.b || ''}</p>;
                     }
 
+                    const isInteractive = !['info', 'media'].includes(s.type);
+                    const isRevealed = revealedSlides[slideIdx] || hostTimerLeft === 0 || hostTimerLeft === null;
+
+                    if (isInteractive && !isRevealed) {
+                      return (
+                        <div className="py-12 px-6 bg-purple-50/80 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-900 rounded-3xl text-center space-y-4 my-4 shadow-sm">
+                          <Clock className="w-12 h-12 text-purple-600 animate-pulse mx-auto" />
+                          <h3 className="text-xl font-bold">Đang trong thời gian học sinh trả lời...</h3>
+                          <p className="text-sm text-stone-600 dark:text-slate-400">
+                            Đã có <b>{r.length}</b> học sinh nộp bài. Toàn bộ câu trả lời sẽ tự động xuất hiện khi hết giờ hoặc khi giáo viên bấm hiện kết quả.
+                          </p>
+                          <button
+                            onClick={forceRevealResults}
+                            className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md transition flex items-center gap-2 mx-auto"
+                          >
+                            <Eye className="w-5 h-5" /> Hiện kết quả ngay (Hết giờ / Kết thúc)
+                          </button>
+                        </div>
+                      );
+                    }
+
                     if (s.type === 'draw') {
+                      const bestMap = bestDrawings[slideIdx] || {};
                       return r.length ? (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                          {r.map((a, j) => String(a.v).startsWith('data:image/jpeg') ? (
-                            <div key={j} className="bg-stone-50 dark:bg-slate-950 border border-stone-200 dark:border-slate-800 p-3 rounded-2xl space-y-2">
-                              <img src={a.v} alt="Drawing" className="w-full h-40 object-contain bg-white rounded-xl border border-stone-200" />
-                              <div className="text-sm font-bold truncate">
-                                {a.n} {a.cls && <span className="text-xs font-semibold text-purple-600">({a.cls})</span>}
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <button onClick={() => gradeAnswer(j, 1)} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs font-bold">✓ 1đ</button>
-                                <button onClick={() => gradeAnswer(j, 0.5)} className="px-2 py-1 bg-purple-200 text-purple-800 rounded-lg text-xs font-bold">½</button>
-                                <button onClick={() => gradeAnswer(j, 0)} className="px-2 py-1 border border-stone-300 rounded-lg text-xs font-bold">✗</button>
-                                {a.g !== undefined && <span className="text-xs font-bold text-emerald-600 ml-auto">{a.g}đ</span>}
-                              </div>
+                        <div className="space-y-4">
+                          {Object.entries(bestMap).some(([_, isBest]) => isBest) && (
+                            <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-2xl flex items-center gap-2 text-amber-800 dark:text-amber-200 font-bold text-sm">
+                              <Trophy className="w-5 h-5 text-amber-500 fill-current animate-bounce" />
+                              <span>Đã vinh danh bức vẽ xuất sắc nhất trong lớp!</span>
                             </div>
-                          ) : null)}
+                          )}
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                            {r.map((a, j) => {
+                              const sid = Object.keys(responses[slideIdx] || {})[j] || String(j);
+                              const isBest = !!bestMap[sid];
+                              return String(a.v).startsWith('data:image/jpeg') ? (
+                                <div key={j} className={`bg-stone-50 dark:bg-slate-950 border ${isBest ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg' : 'border-stone-200 dark:border-slate-800'} p-3 rounded-2xl space-y-2 relative`}>
+                                  {isBest && (
+                                    <div className="absolute -top-3 -right-2 px-2.5 py-0.5 bg-amber-500 text-white text-[11px] font-black rounded-full shadow flex items-center gap-1">
+                                      ⭐ Hình đẹp nhất
+                                    </div>
+                                  )}
+                                  <img src={a.v} alt="Drawing" className="w-full h-40 object-contain bg-white rounded-xl border border-stone-200" />
+                                  <div className="text-sm font-bold truncate">
+                                    {a.n} {a.cls && <span className="text-xs font-semibold text-purple-600">({a.cls})</span>}
+                                  </div>
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    <button onClick={() => gradeAnswer(j, 1)} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs font-bold">✓ 1đ</button>
+                                    <button onClick={() => gradeAnswer(j, 0.5)} className="px-2 py-1 bg-purple-200 text-purple-800 rounded-lg text-xs font-bold">½</button>
+                                    <button onClick={() => gradeAnswer(j, 0)} className="px-2 py-1 border border-stone-300 rounded-lg text-xs font-bold">✗</button>
+                                    <button
+                                      onClick={() => toggleBestDrawing(sid)}
+                                      className={`px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 ${isBest ? 'bg-amber-500 text-white' : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'}`}
+                                      title="Chọn làm hình vẽ đẹp nhất"
+                                    >
+                                      ⭐ {isBest ? 'Đã chọn' : 'Hình đẹp'}
+                                    </button>
+                                    {a.g !== undefined && <span className="text-xs font-bold text-emerald-600 ml-auto">{a.g}đ</span>}
+                                  </div>
+                                </div>
+                              ) : null;
+                            })}
+                          </div>
                         </div>
                       ) : (
                         <p className="text-stone-400 italic py-6 text-center">Đang chờ học sinh gửi bản vẽ từ điện thoại...</p>
@@ -3810,22 +3824,47 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                     }
 
                     if (s.type === 'open') {
+                      const bestMap = bestAnswers[slideIdx] || {};
                       return r.length ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {r.map((a, j) => (
-                            <div key={j} className="p-4 bg-purple-50/60 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/40 rounded-2xl space-y-2">
-                              <div className="text-lg">
-                                <b>{a.n}{a.cls ? ` (${a.cls})` : ''}:</b> {a.v}
-                              </div>
-                              <div className="flex items-center gap-2 text-xs">
-                                <button onClick={() => gradeAnswer(j, 1)} className="px-2.5 py-1 bg-purple-600 text-white rounded-lg font-semibold">✓ 1đ</button>
-                                <button onClick={() => gradeAnswer(j, 0.5)} className="px-2.5 py-1 bg-purple-200 text-purple-800 rounded-lg font-semibold">½</button>
-                                <button onClick={() => gradeAnswer(j, 0)} className="px-2.5 py-1 border border-stone-300 rounded-lg font-semibold">✗ 0đ</button>
-                                {a.g !== undefined && <span className="font-bold text-emerald-600">→ {a.g} điểm</span>}
-                                <button onClick={() => deleteAnswer(j)} className="text-stone-400 hover:text-red-500 ml-auto">✕ Xóa</button>
-                              </div>
+                        <div className="space-y-4">
+                          {Object.entries(bestMap).some(([_, isBest]) => isBest) && (
+                            <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-2xl flex items-center gap-2 text-amber-800 dark:text-amber-200 font-bold text-sm">
+                              <Trophy className="w-5 h-5 text-amber-500 fill-current animate-bounce" />
+                              <span>Đã vinh danh câu trả lời hay nhất trong lớp!</span>
                             </div>
-                          ))}
+                          )}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {r.map((a, j) => {
+                              const sid = Object.keys(responses[slideIdx] || {})[j] || String(j);
+                              const isBest = !!bestMap[sid];
+                              return (
+                                <div key={j} className={`p-4 bg-purple-50/60 dark:bg-purple-950/20 border ${isBest ? 'border-amber-400 ring-2 ring-amber-400 shadow-lg' : 'border-purple-100 dark:border-purple-900/40'} rounded-2xl space-y-2 relative`}>
+                                  {isBest && (
+                                    <div className="absolute -top-3 right-3 px-2.5 py-0.5 bg-amber-500 text-white text-[11px] font-black rounded-full shadow flex items-center gap-1">
+                                      🏆 Câu hay nhất
+                                    </div>
+                                  )}
+                                  <div className="text-lg">
+                                    <b>{a.n}{a.cls ? ` (${a.cls})` : ''}:</b> {a.v}
+                                  </div>
+                                  <div className="flex items-center gap-2 text-xs flex-wrap">
+                                    <button onClick={() => gradeAnswer(j, 1)} className="px-2.5 py-1 bg-purple-600 text-white rounded-lg font-semibold">✓ 1đ</button>
+                                    <button onClick={() => gradeAnswer(j, 0.5)} className="px-2.5 py-1 bg-purple-200 text-purple-800 rounded-lg font-semibold">½</button>
+                                    <button onClick={() => gradeAnswer(j, 0)} className="px-2.5 py-1 border border-stone-300 rounded-lg font-semibold">✗ 0đ</button>
+                                    <button
+                                      onClick={() => toggleBestAnswer(sid)}
+                                      className={`px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1 ${isBest ? 'bg-amber-500 text-white' : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'}`}
+                                      title="Chọn làm câu trả lời hay nhất"
+                                    >
+                                      🏆 {isBest ? 'Đã chọn' : 'Câu hay'}
+                                    </button>
+                                    {a.g !== undefined && <span className="font-bold text-emerald-600">→ {a.g} điểm</span>}
+                                    <button onClick={() => deleteAnswer(j)} className="text-stone-400 hover:text-red-500 ml-auto">✕ Xóa</button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       ) : (
                         <p className="text-stone-400 italic py-6 text-center">Đang chờ câu trả lời của học sinh...</p>
@@ -3965,6 +4004,72 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                   )}
                   <div className="text-4xl font-black tracking-widest text-purple-600 font-mono">{roomCode}</div>
                   <p className="text-xs text-stone-500 break-all">{roomLink}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Cloud Sync & Privacy Settings Modal */}
+            {showCloudModal && (
+              <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4" onClick={() => setShowCloudModal(false)}>
+                <div className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-6 rounded-3xl max-w-lg w-full space-y-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-bold text-xl flex items-center gap-2">
+                      <Cloud className="w-5 h-5 text-purple-600" /> Đồng bộ đám mây & Quyền riêng tư
+                    </h3>
+                    <button onClick={() => setShowCloudModal(false)} className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-slate-800">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 text-sm text-stone-600 dark:text-slate-300">
+                    <p>
+                      Đăng nhập tài khoản Google để lưu trữ và đồng bộ tự động bài giảng & báo cáo thống kê lên đám mây an toàn, truy cập mượt mà trên mọi thiết bị và Vercel.
+                    </p>
+
+                    {cloudSyncMsg && (
+                      <p className="text-xs font-semibold text-purple-600 dark:text-purple-400">{cloudSyncMsg}</p>
+                    )}
+
+                    <div className="pt-3 border-t border-stone-200 dark:border-slate-800 space-y-2">
+                      <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Hoặc đăng nhập bằng Google (tùy chọn):</label>
+                      <button
+                        onClick={handleCloudLogin}
+                        disabled={cloudSyncing}
+                        className="w-full py-2.5 bg-white dark:bg-slate-800 border border-stone-300 dark:border-slate-700 hover:bg-stone-50 text-stone-800 dark:text-slate-200 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-xs"
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24">
+                          <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
+                          <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.13 0-5.78-2.11-6.73-4.96H1.18v3.15C3.15 21.32 7.23 24 12 24z"/>
+                          <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.18C.43 8.13 0 9.83 0 12s.43 3.87 1.18 5.39l4.09-3.15z"/>
+                          <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.23 0 3.15 2.68 1.18 6.61l4.09 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
+                        </svg>
+                        {cloudUser ? `Đang kết nối (${cloudUser.email})` : 'Đăng nhập tài khoản Google'}
+                      </button>
+                    </div>
+
+                    <div className="pt-2 border-t border-stone-200 dark:border-slate-800 flex flex-wrap gap-2 justify-between items-center">
+                      <div className="flex gap-2 flex-wrap">
+                        <button
+                          onClick={handleExportBackupFile}
+                          disabled={cloudSyncing}
+                          className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-slate-800 text-xs font-semibold hover:bg-stone-200 transition flex items-center gap-1.5"
+                        >
+                          <Save className="w-3.5 h-3.5" /> Xuất file sao lưu (.json)
+                        </button>
+                        <label className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-slate-800 text-xs font-semibold hover:bg-stone-200 transition flex items-center gap-1.5 cursor-pointer">
+                          <FolderOpen className="w-3.5 h-3.5" /> Khôi phục sao lưu
+                          <input type="file" accept=".json" onChange={e => e.target.files?.[0] && handleImportBackupFile(e.target.files[0])} className="hidden" />
+                        </label>
+                      </div>
+                      <button
+                        onClick={() => syncWithCloudNow(true)}
+                        disabled={cloudSyncing}
+                        className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition flex items-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncing ? 'animate-spin' : ''}`} /> Đồng bộ ngay
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
