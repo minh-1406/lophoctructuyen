@@ -1,0 +1,185 @@
+{
+  "entities": {
+    "LessonMeta": {
+      "title": "LessonMeta",
+      "description": "Metadata document for a teacher lesson stored in Firestore",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "className": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "customCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "slideCount": {
+          "type": "integer"
+        },
+        "chunkCount": {
+          "type": "integer"
+        },
+        "updatedAtMs": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "className",
+        "customCode",
+        "slideCount",
+        "chunkCount",
+        "updatedAtMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LessonChunk": {
+      "title": "LessonChunk",
+      "description": "Serialized chunk of a lesson including slides and media",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lessonId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "idx": {
+          "type": "integer"
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 750000,
+          "minLength": 1
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "lessonId",
+        "idx",
+        "data",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SessionReportDoc": {
+      "title": "SessionReportDoc",
+      "description": "Cloud-synced classroom session statistics and student activity report",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lessonTitle": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "className": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "roomCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "updatedAtMs": {
+          "type": "integer"
+        },
+        "payloadJson": {
+          "type": "string",
+          "maxLength": 850000,
+          "minLength": 2
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "lessonTitle",
+        "className",
+        "roomCode",
+        "updatedAtMs",
+        "payloadJson",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/lessons/{lessonId}": {
+      "schema": {
+        "$ref": "#/entities/LessonMeta"
+      },
+      "description": "Teacher lesson metadata documents"
+    },
+    "/lessons/{lessonId}/chunks/{chunkId}": {
+      "schema": {
+        "$ref": "#/entities/LessonChunk"
+      },
+      "description": "Chunked lesson payload and media blobs"
+    },
+    "/reports/{reportId}": {
+      "schema": {
+        "$ref": "#/entities/SessionReportDoc"
+      },
+      "description": "Teacher classroom session reports and student statistics"
+    }
+  }
+}

@@ -18,6 +18,19 @@ import {
   getPptxMaxStep,
   repairAndVerifyMediaBlob,
 } from './pptxEngine';
+import {
+  auth,
+  googleProvider,
+  signInWithPopup,
+  fbSignOut,
+  onAuthStateChanged,
+  cloudSaveLesson,
+  cloudDeleteLesson,
+  cloudSaveReport,
+  cloudDeleteReport,
+  cloudSyncAll,
+  type User,
+} from './cloudSync';
 
 // Declare external globals from CDN scripts
 declare const Peer: any;
@@ -206,6 +219,9 @@ export default function App() {
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [statsClassFilter, setStatsClassFilter] = useState<string>('ALL');
   const [expandedActivitySlides, setExpandedActivitySlides] = useState<Record<string, boolean>>({});
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudSyncing, setCloudSyncing] = useState(false);
+  const [cloudSyncMsg, setCloudSyncMsg] = useState('');
 
   // Student State
   const [joinCodeInput, setJoinCodeInput] = useState('');
@@ -521,26 +537,32 @@ export default function App() {
     }
   };
 
-  const reportsPut = async (report: ClassSessionReport) => {
+  const reportsPut = async (report: ClassSessionReport, skipCloud = false) => {
     try {
       const d = await openIdb();
-      return await new Promise<void>((ok, no) => {
+      await new Promise<void>((ok, no) => {
         const t = d.transaction('reports', 'readwrite');
         t.objectStore('reports').put(report);
         t.oncomplete = () => ok();
         t.onerror = no;
       });
+      if (!skipCloud && auth.currentUser) {
+        cloudSaveReport(report).catch(() => {});
+      }
     } catch {}
   };
 
   const reportsDel = async (id: string) => {
     try {
       const d = await openIdb();
-      return await new Promise<void>(ok => {
+      await new Promise<void>(ok => {
         const t = d.transaction('reports', 'readwrite');
         t.objectStore('reports').delete(id);
         t.oncomplete = () => ok();
       });
+      if (auth.currentUser) {
+        cloudDeleteReport(id).catch(() => {});
+      }
     } catch {}
   };
 
@@ -590,6 +612,64 @@ export default function App() {
     return () => { active = false; };
   }, []);
 
+  const syncWithCloudNow = async (showNotice = true) => {
+    if (!auth.currentUser) return;
+    setCloudSyncing(true);
+    if (showNotice) setCloudSyncMsg('Đang đồng bộ dữ liệu đám mây...');
+    try {
+      const [localLessons, localReps] = await Promise.all([dbAll(), reportsAll()]);
+      const { lessons: mergedLessons, reports: mergedReps } = await cloudSyncAll(
+        localLessons,
+        localReps,
+        async l => { await dbPut(l); },
+        async r => { await reportsPut(r, true); }
+      );
+      setMine(mergedLessons);
+      setSessionReports(mergedReps);
+      saveReportsSummaryFallback(mergedReps);
+      if (showNotice) {
+        setCloudSyncMsg(`Đã đồng bộ đám mây (${mergedLessons.length} bài giảng, ${mergedReps.length} thống kê).`);
+      }
+    } catch (err: any) {
+      if (showNotice) {
+        setCloudSyncMsg('Đồng bộ đám mây tạm gián đoạn, dữ liệu trên máy vẫn an toàn.');
+      }
+    } finally {
+      setCloudSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, u => {
+      setCloudUser(u);
+      if (u) {
+        syncWithCloudNow(true);
+      } else {
+        setCloudSyncMsg('');
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  const handleCloudLogin = async () => {
+    try {
+      setCloudSyncing(true);
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      setCloudSyncMsg('Không thể đăng nhập Google: ' + (err?.message || 'Đã hủy'));
+    } finally {
+      setCloudSyncing(false);
+    }
+  };
+
+  const handleCloudLogout = async () => {
+    try {
+      await fbSignOut(auth);
+      setCloudUser(null);
+      setCloudSyncMsg('Đã đăng xuất tài khoản đám mây.');
+    } catch {}
+  };
+
   // Auto-save lesson whenever it has real content and changes
   const getLessonSignature = (l: Lesson) =>
     JSON.stringify({
@@ -628,6 +708,9 @@ export default function App() {
     const sig = getLessonSignature(lToSave);
     lastSavedLessonSigRef.current = sig;
     await dbPut(lToSave);
+    if (auth.currentUser) {
+      cloudSaveLesson(lToSave).catch(() => {});
+    }
     setMine(prev => {
       const idx = prev.findIndex(x => x.id === assignedId);
       if (idx >= 0) {
@@ -641,7 +724,13 @@ export default function App() {
       setLesson(prev => (prev.id ? prev : { ...prev, id: assignedId, updatedAt: lToSave.updatedAt }));
       lessonRef.current = { ...lessonRef.current, id: assignedId, updatedAt: lToSave.updatedAt };
     }
-    if (showToast) setSaveMsg('Đã lưu bài giảng trên trình duyệt.');
+    if (showToast) {
+      setSaveMsg(
+        auth.currentUser
+          ? 'Đã lưu bài giảng và đồng bộ lên Đám mây (Firebase).'
+          : 'Đã lưu bài giảng trên trình duyệt.'
+      );
+    }
     return lToSave;
   };
 
@@ -664,6 +753,9 @@ export default function App() {
       setSessionReports(sorted);
     }
     setView('dash');
+    if (auth.currentUser) {
+      syncWithCloudNow(false);
+    }
   };
 
   const saveCurrentLesson = async () => {
@@ -679,6 +771,9 @@ export default function App() {
     const l = mine[index];
     if (l && l.id) {
       await dbDel(l.id);
+      if (auth.currentUser) {
+        cloudDeleteLesson(l.id).catch(() => {});
+      }
       loadDashboard();
     }
   };
@@ -2450,6 +2545,38 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
               <button onClick={() => { newLesson(); setView('build'); }} className="px-4 py-2 text-sm font-semibold rounded-xl bg-purple-600 text-white hover:bg-purple-700 shadow-sm transition flex items-center gap-1.5">
                 <Plus className="w-4 h-4" /> Tạo bài giảng
               </button>
+              {cloudUser ? (
+                <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 px-3 py-1.5 rounded-xl">
+                  <Cloud className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300 max-w-[120px] truncate" title={cloudUser.email || ''}>
+                    {cloudUser.displayName || cloudUser.email || 'Đã đồng bộ'}
+                  </span>
+                  <button
+                    onClick={() => syncWithCloudNow(true)}
+                    disabled={cloudSyncing}
+                    title="Đồng bộ dữ liệu ngay"
+                    className="p-1 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 transition"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncing ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
+                    onClick={handleCloudLogout}
+                    title="Đăng xuất đám mây"
+                    className="text-[11px] font-semibold text-stone-500 hover:text-red-600 px-1"
+                  >
+                    Thoát
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleCloudLogin}
+                  disabled={cloudSyncing}
+                  className="px-3.5 py-2 text-xs font-bold rounded-xl bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 text-sky-700 dark:text-sky-300 hover:bg-sky-100 transition flex items-center gap-1.5"
+                >
+                  <Cloud className="w-4 h-4" />
+                  {cloudSyncing ? 'Đang kết nối...' : 'Đồng bộ Đám mây'}
+                </button>
+              )}
             </div>
           </div>
         </nav>
@@ -2501,8 +2628,33 @@ Hãy dùng đa dạng loại câu hỏi (ví dụ: cloud khởi động đầu b
         {view === 'dash' && (
           <div className="space-y-8 py-4">
             <div className="flex justify-between items-center flex-wrap gap-4">
-              <h2 className="text-2xl font-bold">Bảng điều khiển</h2>
-              <div className="flex gap-2">
+              <div>
+                <h2 className="text-2xl font-bold">Bảng điều khiển</h2>
+                {cloudSyncMsg && (
+                  <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
+                    {cloudSyncMsg}
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                {cloudUser ? (
+                  <button
+                    onClick={() => syncWithCloudNow(true)}
+                    disabled={cloudSyncing}
+                    className="px-4 py-2 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-semibold rounded-xl hover:bg-emerald-100 transition flex items-center gap-2 text-sm"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${cloudSyncing ? 'animate-spin' : ''}`} />
+                    {cloudSyncing ? 'Đang đồng bộ...' : 'Đồng bộ Đám mây'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleCloudLogin}
+                    disabled={cloudSyncing}
+                    className="px-4 py-2 bg-sky-600 text-white font-semibold rounded-xl hover:bg-sky-700 shadow-sm transition flex items-center gap-2 text-sm"
+                  >
+                    <Cloud className="w-4 h-4" /> Đăng nhập Google để đồng bộ mọi máy
+                  </button>
+                )}
                 <button onClick={() => { newLesson(); setView('build'); }} className="px-4 py-2 bg-stone-200 dark:bg-slate-800 font-semibold rounded-xl hover:bg-stone-300 transition flex items-center gap-2">
                   <Plus className="w-4 h-4" /> Bài giảng mới
                 </button>

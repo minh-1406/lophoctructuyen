@@ -1,0 +1,234 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidLessonMeta(data) {
+      return data.keys().hasAll([
+        'id',
+        'ownerId',
+        'title',
+        'className',
+        'customCode',
+        'slideCount',
+        'chunkCount',
+        'updatedAtMs',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id',
+        'ownerId',
+        'title',
+        'className',
+        'customCode',
+        'slideCount',
+        'chunkCount',
+        'updatedAtMs',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      data.title is string && data.title.size() <= 500 &&
+      data.className is string && data.className.size() <= 200 &&
+      data.customCode is string && data.customCode.size() <= 32 &&
+      data.slideCount is int && data.slideCount >= 0 && data.slideCount <= 2000 &&
+      data.chunkCount is int && data.chunkCount >= 1 && data.chunkCount <= 200 &&
+      data.updatedAtMs is int && data.updatedAtMs >= 0 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidLessonChunk(data) {
+      return data.keys().hasAll([
+        'ownerId',
+        'lessonId',
+        'idx',
+        'data',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId',
+        'lessonId',
+        'idx',
+        'data',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      isValidId(data.lessonId) &&
+      data.idx is int && data.idx >= 0 && data.idx <= 200 &&
+      data.data is string && data.data.size() >= 1 && data.data.size() <= 750000 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidSessionReportDoc(data) {
+      return data.keys().hasAll([
+        'id',
+        'ownerId',
+        'lessonTitle',
+        'className',
+        'roomCode',
+        'updatedAtMs',
+        'payloadJson',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id',
+        'ownerId',
+        'lessonTitle',
+        'className',
+        'roomCode',
+        'updatedAtMs',
+        'payloadJson',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      data.lessonTitle is string && data.lessonTitle.size() <= 500 &&
+      data.className is string && data.className.size() <= 200 &&
+      data.roomCode is string && data.roomCode.size() <= 32 &&
+      data.updatedAtMs is int && data.updatedAtMs >= 0 &&
+      data.payloadJson is string && data.payloadJson.size() >= 2 && data.payloadJson.size() <= 850000 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    match /lessons/{lessonId} {
+      allow get: if isSignedIn() && isValidId(lessonId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(lessonId) &&
+        isValidLessonMeta(incoming()) &&
+        incoming().id == lessonId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(lessonId) &&
+        isValidLessonMeta(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title',
+          'className',
+          'customCode',
+          'slideCount',
+          'chunkCount',
+          'updatedAtMs',
+          'updatedAt'
+        ]);
+
+      allow delete: if isSignedIn() && isValidId(lessonId) && existing().ownerId == request.auth.uid;
+
+      match /chunks/{chunkId} {
+        allow get: if isSignedIn() &&
+          isValidId(lessonId) &&
+          isValidId(chunkId) &&
+          existing().ownerId == request.auth.uid &&
+          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+
+        allow list: if isSignedIn() &&
+          existing().ownerId == request.auth.uid;
+
+        allow create: if isSignedIn() &&
+          isValidId(lessonId) &&
+          isValidId(chunkId) &&
+          isValidLessonChunk(incoming()) &&
+          incoming().lessonId == lessonId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+
+        allow update: if isSignedIn() &&
+          isValidId(lessonId) &&
+          isValidId(chunkId) &&
+          isValidLessonChunk(incoming()) &&
+          existing().ownerId == request.auth.uid &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().lessonId == existing().lessonId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'idx',
+            'data',
+            'updatedAt'
+          ]) &&
+          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+
+        allow delete: if isSignedIn() &&
+          isValidId(lessonId) &&
+          isValidId(chunkId) &&
+          existing().ownerId == request.auth.uid &&
+          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
+          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == request.auth.uid;
+      }
+    }
+
+    match /reports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(reportId) &&
+        isValidSessionReportDoc(incoming()) &&
+        incoming().id == reportId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(reportId) &&
+        isValidSessionReportDoc(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'lessonTitle',
+          'className',
+          'roomCode',
+          'updatedAtMs',
+          'payloadJson',
+          'updatedAt'
+        ]);
+
+      allow delete: if isSignedIn() && isValidId(reportId) && existing().ownerId == request.auth.uid;
+    }
+  }
+}

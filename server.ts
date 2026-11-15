@@ -183,7 +183,7 @@ async function startServer() {
         return { status, message: rawMsg };
       };
 
-      const modelsToTry = ['gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      const modelsToTry = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'];
       let response: any = null;
       let lastErr: any = null;
 
@@ -195,7 +195,7 @@ async function startServer() {
         } catch (err: any) {
           lastErr = err;
           const { status } = extractErrorInfo(err);
-          const isRetryable = status === 503 || status === 429 || status === 500 || status === 502 || status === 504;
+          const isRetryable = status === 404 || status === 400 || status === 503 || status === 429 || status === 500 || status === 502 || status === 504;
           if (!isRetryable || attempt === modelsToTry.length - 1) {
             break;
           }
