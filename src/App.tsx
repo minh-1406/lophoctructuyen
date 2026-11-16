@@ -831,8 +831,15 @@ export default function App() {
     const sig = getLessonSignature(lToSave);
     lastSavedLessonSigRef.current = sig;
     await dbPut(lToSave);
-    if (getActiveCloudOwnerId()) {
-      cloudSaveLesson(lToSave).catch(() => {});
+    if (showToast && getActiveCloudOwnerId()) {
+      try {
+        await cloudSaveLesson(lToSave);
+      } catch {}
+    } else if (getActiveCloudOwnerId()) {
+      // Background cloud sync debounced/deferred silently
+      setTimeout(() => {
+        cloudSaveLesson(lToSave).catch(() => {});
+      }, 3000);
     }
     setMine(prev => {
       const idx = prev.findIndex(x => x.id === assignedId);

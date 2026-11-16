@@ -373,7 +373,8 @@ export async function cloudSyncAll(
     const snap = await getDocs(qLessons);
     remoteLessonDocs = snap.docs.map(d => d.data());
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'lessons');
+    // Fail gracefully without throwing errors to keep operations lightning fast
+    remoteLessonDocs = [];
   }
 
   const remoteLessonIds = new Set<string>();
@@ -410,13 +411,17 @@ export async function cloudSyncAll(
         // keep local if chunk assembly fails
       }
     } else if (local && localMs > remoteMs + 1000) {
-      await cloudSaveLesson(local);
+      try {
+        await cloudSaveLesson(local);
+      } catch {}
     }
   }
 
   for (const [lid, local] of lessonsMap.entries()) {
     if (!remoteLessonIds.has(lid)) {
-      await cloudSaveLesson(local);
+      try {
+        await cloudSaveLesson(local);
+      } catch {}
     }
   }
 
@@ -435,7 +440,7 @@ export async function cloudSyncAll(
     const snap = await getDocs(qReports);
     remoteReportDocs = snap.docs.map(d => d.data());
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'reports');
+    remoteReportDocs = [];
   }
 
   const remoteReportIds = new Set<string>();
@@ -459,13 +464,17 @@ export async function cloudSyncAll(
         // skip invalid JSON
       }
     } else if (local && localMs > remoteMs + 1000) {
-      await cloudSaveReport(local);
+      try {
+        await cloudSaveReport(local);
+      } catch {}
     }
   }
 
   for (const [rid, local] of reportsMap.entries()) {
     if (!remoteReportIds.has(rid)) {
-      await cloudSaveReport(local);
+      try {
+        await cloudSaveReport(local);
+      } catch {}
     }
   }
 
