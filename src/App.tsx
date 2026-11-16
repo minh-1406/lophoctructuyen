@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Sparkles, BookOpen, Users, Plus, Trash2, ArrowRight, ArrowLeft, 
+  Sparkles, BookOpen, Plus, Trash2, ArrowRight, ArrowLeft, 
   Check, X, Trophy, Play, Upload, FileText, QrCode, RefreshCw, BarChart2, 
   HelpCircle, MessageSquare, Cloud, Sliders, Edit3, Image as ImageIcon, Info,
   Share2, Award, ChevronRight, CheckCircle2, AlertCircle, Save, FolderOpen,
@@ -241,29 +241,30 @@ export default function App() {
 
   const getSlideVoteTally = (sIdx: number) => {
     const tally: Record<string, number> = {};
-    const slideMap = studentVotes[sIdx] || {};
+    const slideMap = studentVotes?.[sIdx] || {};
     for (const targetSid of Object.values(slideMap)) {
-      tally[targetSid] = (tally[targetSid] || 0) + 1;
+      if (targetSid) tally[targetSid] = (tally[targetSid] || 0) + 1;
     }
     return tally;
   };
 
   const startVotingPhase = () => {
     const curIdx = slideIdxRef.current;
-    const r = Object.entries(responsesRef.current[curIdx] || {}).map(([sid, val]) => ({
+    const respMap = responsesRef.current?.[curIdx] || {};
+    const r = Object.entries(respMap).map(([sid, val]) => ({
       sid,
-      n: val.n,
-      cls: val.cls,
-      v: val.v,
+      n: val?.n || sid,
+      cls: val?.cls || '',
+      v: val?.v || '',
     }));
-    setVotingActive(prev => ({ ...prev, [curIdx]: true }));
+    setVotingActive(prev => ({ ...(prev || {}), [curIdx]: true }));
     connectionsRef.current.forEach(c => {
-      if (c.open) c.send({ t: 'voting_start', slideIdx: curIdx, submissions: r });
+      if (c && c.open) c.send({ t: 'voting_start', slideIdx: curIdx, submissions: r });
     });
   };
 
   const forceRevealResults = () => {
-    setRevealedSlides(prev => ({ ...prev, [slideIdxRef.current]: true }));
+    setRevealedSlides(prev => ({ ...(prev || {}), [slideIdxRef.current]: true }));
     setHostTimerRunning(false);
     hostTimerRunningRef.current = false;
     setHostTimerLeft(0);
@@ -437,7 +438,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [lesson.M]);
+  }, [Object.keys(lesson.M || {}).sort().join(',')]);
 
   const normalizeClassCode = (raw: string) =>
     (raw || '')
@@ -538,39 +539,43 @@ export default function App() {
   };
 
   const dbPut = async (l: Lesson) => {
-    // Convert Blobs to ArrayBuffer records before IndexedDB write so Blobs never detach across iframe reloads
-    const serializedM: Record<string, any> = {};
-    if (l.M) {
-      for (const [k, val] of Object.entries(l.M)) {
-        if (val instanceof Blob) {
-          try {
-            const ab = await val.arrayBuffer();
-            serializedM[k] = { _ab: ab, type: val.type || 'application/octet-stream' };
-          } catch {
+    try {
+      const serializedM: Record<string, any> = {};
+      if (l.M) {
+        for (const [k, val] of Object.entries(l.M)) {
+          if (val instanceof Blob) {
+            try {
+              const ab = await val.arrayBuffer();
+              serializedM[k] = { _ab: ab, type: val.type || 'application/octet-stream' };
+            } catch {
+              // skip unserializable blob
+            }
+          } else if (val && (val as any)._ab) {
             serializedM[k] = val;
           }
-        } else if (val && (val as any)._ab) {
-          serializedM[k] = val;
         }
       }
-    }
-    const toStore = { ...l, M: serializedM };
-    const d = await openIdb();
-    return new Promise<void>((ok, no) => {
-      const t = d.transaction('l', 'readwrite');
-      t.objectStore('l').put(toStore);
-      t.oncomplete = () => ok();
-      t.onerror = no;
-    });
+      const toStore = { ...l, M: serializedM };
+      const d = await openIdb();
+      await new Promise<void>((ok, no) => {
+        const t = d.transaction('l', 'readwrite');
+        t.objectStore('l').put(toStore);
+        t.oncomplete = () => ok();
+        t.onerror = () => no(t.error);
+      });
+    } catch {}
   };
 
   const dbDel = async (id: string) => {
-    const d = await openIdb();
-    return new Promise<void>(ok => {
-      const t = d.transaction('l', 'readwrite');
-      t.objectStore('l').delete(id);
-      t.oncomplete = () => ok();
-    });
+    try {
+      const d = await openIdb();
+      await new Promise<void>((ok, no) => {
+        const t = d.transaction('l', 'readwrite');
+        t.objectStore('l').delete(id);
+        t.oncomplete = () => ok();
+        t.onerror = () => no(t.error);
+      });
+    } catch {}
   };
 
   const reportsAll = async () => {
@@ -1861,12 +1866,15 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
   const calculateScores = (curLesson = lessonRef.current, curResponses = responsesRef.current) => {
     const t: Record<string, number> = {};
     const nm: Record<string, string> = {};
-    curLesson.slides.forEach((s, i) => {
-      for (const [k, a] of Object.entries(curResponses[i] || {})) {
-        nm[k] = a.n;
+    const slides = curLesson?.slides || [];
+    slides.forEach((s, i) => {
+      const respMap = curResponses?.[i] || {};
+      for (const [k, a] of Object.entries(respMap)) {
+        if (!a) continue;
+        nm[k] = a.n || k;
         let p = 0;
-        if (s.type === 'quiz') p = (a.v === s.a) ? 1 : 0;
-        else if (a.g !== undefined) p = a.g;
+        if (s?.type === 'quiz') p = (a.v === s.a) ? 1 : 0;
+        else if (a.g !== undefined && a.g !== null) p = Number(a.g) || 0;
         t[k] = (t[k] || 0) + p;
       }
     });
@@ -2482,7 +2490,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
         studentConnRef.current.send({ t: 'need', id });
       }
     });
-  }, [studentCurState, studentConnected, mediaCache]);
+  }, [studentCurState?.idx, studentConnected]);
 
   const resolveMediaUrl = (id: string) => {
     if (!id) return '';
@@ -2698,8 +2706,8 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                   Phòng {roomCode}: {onlineStudentCount} HS truy cập
                 </button>
               )}
-              <button onClick={() => setView('join')} className="px-4 py-2 text-sm font-semibold rounded-xl border border-stone-300 dark:border-slate-700 hover:bg-stone-100 dark:hover:bg-slate-800 transition flex items-center gap-1.5">
-                <Users className="w-4 h-4" /> Tham gia lớp
+              <button onClick={() => setView('join')} className="px-4 py-2 text-sm font-semibold rounded-xl border border-stone-300 dark:border-slate-700 hover:bg-stone-100 dark:hover:bg-slate-800 transition">
+                Tham gia lớp
               </button>
               <button onClick={() => setView('stats')} className="px-4 py-2 text-sm font-semibold rounded-xl border border-stone-300 dark:border-slate-700 hover:bg-stone-100 dark:hover:bg-slate-800 transition flex items-center gap-1.5">
                 <BarChart2 className="w-4 h-4 text-purple-600" /> Thống kê lớp
@@ -2744,8 +2752,8 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                 <button onClick={loadDashboard} className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-lg shadow-purple-500/20 transition flex items-center gap-2">
                   <Play className="w-5 h-5 fill-current" /> Bắt đầu ngay
                 </button>
-                <button onClick={() => setView('join')} className="px-6 py-3 bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-stone-300 hover:bg-stone-200 font-bold rounded-xl transition flex items-center gap-2">
-                  <Users className="w-5 h-5" /> Tôi là học sinh
+                <button onClick={() => setView('join')} className="px-6 py-3 bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-stone-300 hover:bg-stone-200 font-bold rounded-xl transition">
+                  Tôi là học sinh
                 </button>
               </div>
             </div>
@@ -3452,7 +3460,6 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                       Phòng học đang mở
                     </div>
                     <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-extrabold ${onlineStudentCount > 0 ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300' : 'bg-stone-100 dark:bg-slate-800 text-stone-600 dark:text-slate-300'}`}>
-                      <Users className="w-3.5 h-3.5" />
                       <span>{onlineStudentCount} học sinh đang truy cập</span>
                     </div>
                   </div>
@@ -3709,7 +3716,6 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                         <div className="flex items-center gap-3 flex-wrap">
                           {isInteractive && (
                             <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300">
-                              <Users className="w-4 h-4" />
                               <span className="text-sm font-extrabold">
                                 Đã nộp: {submittedCount} / {totalStudentsCount} học sinh ({submittedPct}%)
                               </span>
