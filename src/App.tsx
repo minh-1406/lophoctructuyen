@@ -28,6 +28,8 @@ import {
   cloudDeleteLesson,
   cloudSaveReport,
   cloudDeleteReport,
+  cloudFetchAllLessons,
+  cloudFetchAllReports,
   cloudSyncAll,
   getSavedSyncKey,
   setSavedSyncKey,
@@ -513,79 +515,29 @@ export default function App() {
 
   const dbAll = async () => {
     try {
-      const d = await openIdb();
-      const rawList = await new Promise<Lesson[]>(ok => {
-        const q = d.transaction('l').objectStore('l').getAll();
-        q.onsuccess = () => ok(q.result || []);
-        q.onerror = () => ok([]);
-      });
-      const validList: Lesson[] = [];
-      for (const item of rawList) {
-        if (isBogusPlaceholderLesson(item)) {
-          if (item?.id) {
-            try {
-              const tx = d.transaction('l', 'readwrite');
-              tx.objectStore('l').delete(item.id);
-            } catch {}
-          }
-          continue;
-        }
-        validList.push(hydrateLessonMedia(item));
-      }
-      return validList.sort((a: Lesson, b: Lesson) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-    } catch (e) {
+      const list = await cloudFetchAllLessons();
+      return (list || []).map((item: any) => hydrateLessonMedia(item));
+    } catch {
       return [];
     }
   };
 
   const dbPut = async (l: Lesson) => {
     try {
-      const serializedM: Record<string, any> = {};
-      if (l.M) {
-        for (const [k, val] of Object.entries(l.M)) {
-          if (val instanceof Blob) {
-            try {
-              const ab = await val.arrayBuffer();
-              serializedM[k] = { _ab: ab, type: val.type || 'application/octet-stream' };
-            } catch {
-              // skip unserializable blob
-            }
-          } else if (val && (val as any)._ab) {
-            serializedM[k] = val;
-          }
-        }
-      }
-      const toStore = { ...l, M: serializedM };
-      const d = await openIdb();
-      await new Promise<void>((ok, no) => {
-        const t = d.transaction('l', 'readwrite');
-        t.objectStore('l').put(toStore);
-        t.oncomplete = () => ok();
-        t.onerror = () => no(t.error);
-      });
+      await cloudSaveLesson(l);
     } catch {}
   };
 
   const dbDel = async (id: string) => {
     try {
-      const d = await openIdb();
-      await new Promise<void>((ok, no) => {
-        const t = d.transaction('l', 'readwrite');
-        t.objectStore('l').delete(id);
-        t.oncomplete = () => ok();
-        t.onerror = () => no(t.error);
-      });
+      await cloudDeleteLesson(id);
     } catch {}
   };
 
   const reportsAll = async () => {
     try {
-      const d = await openIdb();
-      return await new Promise<ClassSessionReport[]>(ok => {
-        const q = d.transaction('reports').objectStore('reports').getAll();
-        q.onsuccess = () => ok(q.result || []);
-        q.onerror = () => ok([]);
-      });
+      const list = await cloudFetchAllReports();
+      return list || [];
     } catch {
       return [];
     }
@@ -593,30 +545,13 @@ export default function App() {
 
   const reportsPut = async (report: ClassSessionReport, skipCloud = false) => {
     try {
-      const d = await openIdb();
-      await new Promise<void>((ok, no) => {
-        const t = d.transaction('reports', 'readwrite');
-        t.objectStore('reports').put(report);
-        t.oncomplete = () => ok();
-        t.onerror = no;
-      });
-      if (!skipCloud && getActiveCloudOwnerId()) {
-        cloudSaveReport(report).catch(() => {});
-      }
+      await cloudSaveReport(report);
     } catch {}
   };
 
   const reportsDel = async (id: string) => {
     try {
-      const d = await openIdb();
-      await new Promise<void>(ok => {
-        const t = d.transaction('reports', 'readwrite');
-        t.objectStore('reports').delete(id);
-        t.oncomplete = () => ok();
-      });
-      if (getActiveCloudOwnerId()) {
-        cloudDeleteReport(id).catch(() => {});
-      }
+      await cloudDeleteReport(id);
     } catch {}
   };
 

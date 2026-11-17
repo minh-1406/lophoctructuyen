@@ -525,6 +525,70 @@ export async function importBackupJson(file: File): Promise<{ lessons: any[]; re
   return { lessons, reports };
 }
 
+export async function cloudFetchAllLessons(): Promise<any[]> {
+  const ownerId = getActiveCloudOwnerId();
+  if (!ownerId) return [];
+  const stripPrefix = (docId: string) => {
+    const prefix = `${ownerId}_`;
+    return docId.startsWith(prefix) ? docId.slice(prefix.length) : docId;
+  };
+  try {
+    const qLessons = query(collection(db, 'lessons'), where('ownerId', '==', ownerId));
+    const snap = await getDocs(qLessons);
+    const remoteLessons: any[] = [];
+    for (const dSnap of snap.docs) {
+      const meta = dSnap.data();
+      const docId = meta.id;
+      const lid = stripPrefix(docId);
+      try {
+        const qChunks = query(collection(db, 'lessons', docId, 'chunks'), where('ownerId', '==', ownerId));
+        const chunkSnap = await getDocs(qChunks);
+        const sortedChunks = chunkSnap.docs
+          .map(d => d.data())
+          .sort((a, b) => (a.idx || 0) - (b.idx || 0));
+        const expectedCount = typeof meta.chunkCount === 'number' ? meta.chunkCount : sortedChunks.length;
+        const joined = sortedChunks.slice(0, expectedCount).map(c => c.data || '').join('');
+        if (joined) {
+          const hydrated = deserializeLessonWithMedia(joined);
+          hydrated.id = lid;
+          remoteLessons.push(hydrated);
+        }
+      } catch {}
+    }
+    return remoteLessons.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  } catch {
+    return [];
+  }
+}
+
+export async function cloudFetchAllReports(): Promise<any[]> {
+  const ownerId = getActiveCloudOwnerId();
+  if (!ownerId) return [];
+  const stripPrefix = (docId: string) => {
+    const prefix = `${ownerId}_`;
+    return docId.startsWith(prefix) ? docId.slice(prefix.length) : docId;
+  };
+  try {
+    const qReports = query(collection(db, 'reports'), where('ownerId', '==', ownerId));
+    const snap = await getDocs(qReports);
+    const reports: any[] = [];
+    for (const rdoc of snap.docs) {
+      const data = rdoc.data();
+      const rid = stripPrefix(data.id);
+      try {
+        const parsed = JSON.parse(data.payloadJson);
+        if (parsed && parsed.id) {
+          parsed.id = rid;
+          reports.push(parsed);
+        }
+      } catch {}
+    }
+    return reports.sort((a, b) => (b.updatedAt || b.id).localeCompare(a.updatedAt || a.id));
+  } catch {
+    return [];
+  }
+}
+
 export {
   auth,
   googleProvider,
