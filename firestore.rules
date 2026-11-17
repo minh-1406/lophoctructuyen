@@ -2,7 +2,6 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Pillar 1: Global Safety Net (Default Deny)
     match /{document=**} {
       allow read, write: if false;
     }
@@ -11,15 +10,14 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    // Validates teacher cloud sync namespace (supports both Firebase Auth UID and cross-domain Vercel Sync Key)
     function isValidOwnerKey(ownerId) {
       return ownerId is string &&
-        ownerId.size() >= 6 &&
+        ownerId.size() >= 3 &&
         ownerId.size() <= 128 &&
         ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
         (
           (request.auth != null && ownerId == request.auth.uid) ||
-          ownerId.matches('^sync_[a-zA-Z0-9_\\-]{3,120}$')
+          ownerId.matches('^sync_[a-zA-Z0-9_\\-]{2,120}$')
         );
     }
 
@@ -128,8 +126,8 @@ service cloud.firestore {
     }
 
     match /lessons/{lessonId} {
-      allow get: if isValidId(lessonId) && isValidOwnerKey(existing().ownerId);
-      allow list: if isValidOwnerKey(existing().ownerId);
+      allow get: if isValidId(lessonId) && (resource == null || isValidOwnerKey(resource.data.ownerId));
+      allow list: if true;
 
       allow create: if isValidId(lessonId) &&
         isValidLessonMeta(incoming()) &&
@@ -139,68 +137,43 @@ service cloud.firestore {
 
       allow update: if isValidId(lessonId) &&
         isValidLessonMeta(incoming()) &&
-        isValidOwnerKey(existing().ownerId) &&
-        incoming().ownerId == existing().ownerId &&
-        incoming().id == existing().id &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'title',
-          'className',
-          'customCode',
-          'slideCount',
-          'chunkCount',
-          'updatedAtMs',
-          'updatedAt'
-        ]);
+        resource != null &&
+        isValidOwnerKey(resource.data.ownerId) &&
+        incoming().ownerId == resource.data.ownerId &&
+        incoming().id == resource.data.id &&
+        incoming().createdAt == resource.data.createdAt &&
+        incoming().updatedAt == request.time;
 
-      allow delete: if isValidId(lessonId) && isValidOwnerKey(existing().ownerId);
+      allow delete: if isValidId(lessonId) && (resource == null || isValidOwnerKey(resource.data.ownerId));
 
       match /chunks/{chunkId} {
-        allow get: if isValidId(lessonId) &&
-          isValidId(chunkId) &&
-          isValidOwnerKey(existing().ownerId) &&
-          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == existing().ownerId;
-
-        allow list: if isValidOwnerKey(existing().ownerId);
+        allow get: if isValidId(lessonId) && isValidId(chunkId) && (resource == null || isValidOwnerKey(resource.data.ownerId));
+        allow list: if true;
 
         allow create: if isValidId(lessonId) &&
           isValidId(chunkId) &&
           isValidLessonChunk(incoming()) &&
           incoming().lessonId == lessonId &&
           incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
-          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == incoming().ownerId;
+          incoming().updatedAt == request.time;
 
         allow update: if isValidId(lessonId) &&
           isValidId(chunkId) &&
           isValidLessonChunk(incoming()) &&
-          isValidOwnerKey(existing().ownerId) &&
-          incoming().ownerId == existing().ownerId &&
-          incoming().lessonId == existing().lessonId &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'idx',
-            'data',
-            'updatedAt'
-          ]) &&
-          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == existing().ownerId;
+          resource != null &&
+          isValidOwnerKey(resource.data.ownerId) &&
+          incoming().ownerId == resource.data.ownerId &&
+          incoming().lessonId == resource.data.lessonId &&
+          incoming().createdAt == resource.data.createdAt &&
+          incoming().updatedAt == request.time;
 
-        allow delete: if isValidId(lessonId) &&
-          isValidId(chunkId) &&
-          isValidOwnerKey(existing().ownerId) &&
-          exists(/databases/$(database)/documents/lessons/$(lessonId)) &&
-          get(/databases/$(database)/documents/lessons/$(lessonId)).data.ownerId == existing().ownerId;
+        allow delete: if isValidId(lessonId) && isValidId(chunkId) && (resource == null || isValidOwnerKey(resource.data.ownerId));
       }
     }
 
     match /reports/{reportId} {
-      allow get: if isValidId(reportId) && isValidOwnerKey(existing().ownerId);
-      allow list: if isValidOwnerKey(existing().ownerId);
+      allow get: if isValidId(reportId) && (resource == null || isValidOwnerKey(resource.data.ownerId));
+      allow list: if true;
 
       allow create: if isValidId(reportId) &&
         isValidSessionReportDoc(incoming()) &&
@@ -210,21 +183,14 @@ service cloud.firestore {
 
       allow update: if isValidId(reportId) &&
         isValidSessionReportDoc(incoming()) &&
-        isValidOwnerKey(existing().ownerId) &&
-        incoming().ownerId == existing().ownerId &&
-        incoming().id == existing().id &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'lessonTitle',
-          'className',
-          'roomCode',
-          'updatedAtMs',
-          'payloadJson',
-          'updatedAt'
-        ]);
+        resource != null &&
+        isValidOwnerKey(resource.data.ownerId) &&
+        incoming().ownerId == resource.data.ownerId &&
+        incoming().id == resource.data.id &&
+        incoming().createdAt == resource.data.createdAt &&
+        incoming().updatedAt == request.time;
 
-      allow delete: if isValidId(reportId) && isValidOwnerKey(existing().ownerId);
+      allow delete: if isValidId(reportId) && (resource == null || isValidOwnerKey(resource.data.ownerId));
     }
   }
 }

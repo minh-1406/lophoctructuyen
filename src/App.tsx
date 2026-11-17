@@ -658,6 +658,11 @@ export default function App() {
     setShowCloudModal(false);
   };
 
+  const openCloudModal = () => {
+    setShowCloudModal(true);
+    syncWithCloudNow(false);
+  };
+
   const handleCloudLogin = async () => {
     try {
       setCloudSyncing(true);
@@ -2656,7 +2661,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                 <BookOpen className="w-4 h-4" /> Bảng điều khiển
               </button>
               <button
-                onClick={() => setShowCloudModal(true)}
+                onClick={openCloudModal}
                 title="Cài đặt đồng bộ đám mây"
                 className="px-3.5 py-2 text-sm font-semibold rounded-xl bg-purple-50 dark:bg-purple-950/50 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-100 transition flex items-center gap-1.5"
               >
@@ -3593,6 +3598,13 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                   <button onClick={() => setShowScoreboard(v => !v)} className="px-3 py-2 text-xs font-bold rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 hover:bg-amber-100 transition flex items-center gap-1.5">
                     <Trophy className="w-4 h-4" /> Bảng điểm
                   </button>
+                  <button
+                    onClick={openCloudModal}
+                    title="Cài đặt đồng bộ đám mây"
+                    className="px-3 py-2 text-xs font-bold rounded-xl bg-purple-50 dark:bg-purple-950/50 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-100 transition flex items-center gap-1.5"
+                  >
+                    <Cloud className="w-4 h-4 text-purple-600" /> Đồng bộ đám mây
+                  </button>
                   <button onClick={() => endClassroom(false)} className="px-3.5 py-2 text-xs font-bold rounded-xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 hover:bg-red-100 transition">
                     Kết thúc & Thống kê
                   </button>
@@ -4011,92 +4023,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
               </div>
             )}
 
-            {/* Cloud Sync & Privacy Settings Modal */}
-            {showCloudModal && (
-              <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4" onClick={() => setShowCloudModal(false)}>
-                <div className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-6 rounded-3xl max-w-lg w-full space-y-5 shadow-2xl" onClick={e => e.stopPropagation()}>
-                  <div className="flex justify-between items-center">
-                    <h3 className="font-bold text-xl flex items-center gap-2">
-                      <Cloud className="w-5 h-5 text-purple-600" /> Đồng bộ đám mây & Quyền riêng tư
-                    </h3>
-                    <button onClick={() => setShowCloudModal(false)} className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-slate-800">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-3 text-sm text-stone-600 dark:text-slate-300">
-                    <p>
-                      Đăng nhập tài khoản Google để lưu trữ và đồng bộ tự động bài giảng & báo cáo thống kê lên đám mây an toàn, truy cập mượt mà trên mọi thiết bị và Vercel.
-                    </p>
-
-                    {cloudSyncMsg && (
-                      <p className="text-xs font-semibold text-purple-600 dark:text-purple-400">{cloudSyncMsg}</p>
-                    )}
-
-                    <div className="space-y-2 pt-2 border-t border-stone-200 dark:border-slate-800">
-                      <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Mã đồng bộ / Email của bạn:</label>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={cloudKeyInput}
-                          onChange={e => setCloudKeyInput(e.target.value)}
-                          placeholder="vd: quangminh1485"
-                          className="flex-1 font-mono text-sm uppercase px-3 py-2 rounded-xl border border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-800"
-                        />
-                        <button
-                          onClick={handleSaveCloudKeyAndSync}
-                          disabled={cloudSyncing}
-                          className="px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-700 transition"
-                        >
-                          Lưu & Đồng bộ
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-stone-400">Mặc định: quangminh1485. Dùng chung mã này trên mọi thiết bị để đồng bộ tự động.</p>
-                    </div>
-
-                    <div className="pt-3 border-t border-stone-200 dark:border-slate-800 space-y-2">
-                      <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Hoặc đăng nhập bằng Google (tùy chọn):</label>
-                      <button
-                        onClick={handleCloudLogin}
-                        disabled={cloudSyncing}
-                        className="w-full py-2.5 bg-white dark:bg-slate-800 border border-stone-300 dark:border-slate-700 hover:bg-stone-50 text-stone-800 dark:text-slate-200 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-xs"
-                      >
-                        <svg className="w-4 h-4" viewBox="0 0 24 24">
-                          <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
-                          <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.13 0-5.78-2.11-6.73-4.96H1.18v3.15C3.15 21.32 7.23 24 12 24z"/>
-                          <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.18C.43 8.13 0 9.83 0 12s.43 3.87 1.18 5.39l4.09-3.15z"/>
-                          <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.23 0 3.15 2.68 1.18 6.61l4.09 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
-                        </svg>
-                        {cloudUser ? `Đang kết nối (${cloudUser.email})` : 'Đăng nhập tài khoản Google'}
-                      </button>
-                    </div>
-
-                    <div className="pt-2 border-t border-stone-200 dark:border-slate-800 flex flex-wrap gap-2 justify-between items-center">
-                      <div className="flex gap-2 flex-wrap">
-                        <button
-                          onClick={handleExportBackupFile}
-                          disabled={cloudSyncing}
-                          className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-slate-800 text-xs font-semibold hover:bg-stone-200 transition flex items-center gap-1.5"
-                        >
-                          <Save className="w-3.5 h-3.5" /> Xuất file sao lưu (.json)
-                        </button>
-                        <label className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-slate-800 text-xs font-semibold hover:bg-stone-200 transition flex items-center gap-1.5 cursor-pointer">
-                          <FolderOpen className="w-3.5 h-3.5" /> Khôi phục sao lưu
-                          <input type="file" accept=".json" onChange={e => e.target.files?.[0] && handleImportBackupFile(e.target.files[0])} className="hidden" />
-                        </label>
-                      </div>
-                      <button
-                        onClick={() => syncWithCloudNow(true)}
-                        disabled={cloudSyncing}
-                        className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition flex items-center gap-1.5"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncing ? 'animate-spin' : ''}`} /> Đồng bộ ngay
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Cloud modal moved to root */}
           </div>
         )}
 
@@ -4879,6 +4806,93 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
         <footer className="py-8 text-center text-stone-500 dark:text-slate-500 text-xs border-t border-stone-200 dark:border-slate-800 mt-auto">
           Lớp học trực tuyến · Toàn bộ bài giảng, hoạt động tương tác và thống kê lớp được lưu tự động
         </footer>
+      )}
+
+      {/* Cloud Sync & Privacy Settings Modal (Global) */}
+      {showCloudModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4" onClick={() => setShowCloudModal(false)}>
+          <div className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-6 rounded-3xl max-w-lg w-full space-y-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-xl flex items-center gap-2">
+                <Cloud className="w-5 h-5 text-purple-600" /> Đồng bộ đám mây & Quyền riêng tư
+              </h3>
+              <button onClick={() => setShowCloudModal(false)} className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-slate-800">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-sm text-stone-600 dark:text-slate-300">
+              <p>
+                Đăng nhập tài khoản Google để lưu trữ và đồng bộ tự động bài giảng & báo cáo thống kê lên đám mây an toàn, truy cập mượt mà trên mọi thiết bị và Vercel.
+              </p>
+
+              {cloudSyncMsg && (
+                <p className="text-xs font-semibold text-purple-600 dark:text-purple-400">{cloudSyncMsg}</p>
+              )}
+
+              <div className="space-y-2 pt-2 border-t border-stone-200 dark:border-slate-800">
+                <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Mã đồng bộ / Email của bạn:</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={cloudKeyInput}
+                    onChange={e => setCloudKeyInput(e.target.value)}
+                    placeholder="vd: quangminh1485"
+                    className="flex-1 font-mono text-sm uppercase px-3 py-2 rounded-xl border border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                  />
+                  <button
+                    onClick={handleSaveCloudKeyAndSync}
+                    disabled={cloudSyncing}
+                    className="px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-700 transition"
+                  >
+                    Lưu & Đồng bộ
+                  </button>
+                </div>
+                <p className="text-[11px] text-stone-400">Mặc định: quangminh1485. Dùng chung mã này trên mọi thiết bị để đồng bộ tự động.</p>
+              </div>
+
+              <div className="pt-3 border-t border-stone-200 dark:border-slate-800 space-y-2">
+                <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Hoặc đăng nhập bằng Google (tùy chọn):</label>
+                <button
+                  onClick={handleCloudLogin}
+                  disabled={cloudSyncing}
+                  className="w-full py-2.5 bg-white dark:bg-slate-800 border border-stone-300 dark:border-slate-700 hover:bg-stone-50 text-stone-800 dark:text-slate-200 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-xs"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
+                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.13 0-5.78-2.11-6.73-4.96H1.18v3.15C3.15 21.32 7.23 24 12 24z"/>
+                    <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.18C.43 8.13 0 9.83 0 12s.43 3.87 1.18 5.39l4.09-3.15z"/>
+                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.23 0 3.15 2.68 1.18 6.61l4.09 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
+                  </svg>
+                  {cloudUser ? `Đang kết nối (${cloudUser.email})` : 'Đăng nhập tài khoản Google'}
+                </button>
+              </div>
+
+              <div className="pt-2 border-t border-stone-200 dark:border-slate-800 flex flex-wrap gap-2 justify-between items-center">
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={handleExportBackupFile}
+                    disabled={cloudSyncing}
+                    className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-slate-800 text-xs font-semibold hover:bg-stone-200 transition flex items-center gap-1.5"
+                  >
+                    <Save className="w-3.5 h-3.5" /> Xuất file sao lưu (.json)
+                  </button>
+                  <label className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-slate-800 text-xs font-semibold hover:bg-stone-200 transition flex items-center gap-1.5 cursor-pointer">
+                    <FolderOpen className="w-3.5 h-3.5" /> Khôi phục sao lưu
+                    <input type="file" accept=".json" onChange={e => e.target.files?.[0] && handleImportBackupFile(e.target.files[0])} className="hidden" />
+                  </label>
+                </div>
+                <button
+                  onClick={() => syncWithCloudNow(true)}
+                  disabled={cloudSyncing}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncing ? 'animate-spin' : ''}`} /> Đồng bộ ngay
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
