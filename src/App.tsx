@@ -776,15 +776,8 @@ export default function App() {
     const sig = getLessonSignature(lToSave);
     lastSavedLessonSigRef.current = sig;
     await dbPut(lToSave);
-    if (showToast && getActiveCloudOwnerId()) {
-      try {
-        await cloudSaveLesson(lToSave);
-      } catch {}
-    } else if (getActiveCloudOwnerId()) {
-      // Background cloud sync debounced/deferred silently
-      setTimeout(() => {
-        cloudSaveLesson(lToSave).catch(() => {});
-      }, 3000);
+    if (getActiveCloudOwnerId()) {
+      cloudSaveLesson(lToSave).catch(() => {});
     }
     setMine(prev => {
       const idx = prev.findIndex(x => x.id === assignedId);
@@ -909,6 +902,9 @@ export default function App() {
     setClassCodeMsg('');
     setSlideIdx(0);
     setSaveMsg('');
+    if (getActiveCloudOwnerId()) {
+      cloudSaveLesson(fresh).catch(() => {});
+    }
   };
 
   const addOrSelectClassCode = (rawInput?: string, syncClassName = true) => {
