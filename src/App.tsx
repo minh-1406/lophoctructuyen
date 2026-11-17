@@ -4033,6 +4033,27 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                       <p className="text-xs font-semibold text-purple-600 dark:text-purple-400">{cloudSyncMsg}</p>
                     )}
 
+                    <div className="space-y-2 pt-2 border-t border-stone-200 dark:border-slate-800">
+                      <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Mã đồng bộ / Email của bạn:</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={cloudKeyInput}
+                          onChange={e => setCloudKeyInput(e.target.value)}
+                          placeholder="vd: quangminh1485"
+                          className="flex-1 font-mono text-sm uppercase px-3 py-2 rounded-xl border border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                        />
+                        <button
+                          onClick={handleSaveCloudKeyAndSync}
+                          disabled={cloudSyncing}
+                          className="px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-700 transition"
+                        >
+                          Lưu & Đồng bộ
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-stone-400">Mặc định: quangminh1485. Dùng chung mã này trên mọi thiết bị để đồng bộ tự động.</p>
+                    </div>
+
                     <div className="pt-3 border-t border-stone-200 dark:border-slate-800 space-y-2">
                       <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Hoặc đăng nhập bằng Google (tùy chọn):</label>
                       <button
