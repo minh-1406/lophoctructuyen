@@ -22,6 +22,8 @@ import {
   auth,
   googleProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   fbSignOut,
   onAuthStateChanged,
   cloudSaveLesson,
@@ -684,6 +686,20 @@ export default function App() {
   };
 
   useEffect(() => {
+    getRedirectResult(auth)
+      .then(cred => {
+        if (cred?.user) {
+          setCloudUser(cred.user);
+          if (cred.user.email) {
+            const norm = setSavedSyncKey(cred.user.email);
+            setCloudSyncKey(norm);
+            setCloudKeyInput(norm);
+          }
+          syncWithCloudNow(true);
+        }
+      })
+      .catch(() => {});
+
     const unsub = onAuthStateChanged(auth, u => {
       setCloudUser(u);
       if (u && u.email && !getSavedSyncKey()) {
@@ -719,9 +735,12 @@ export default function App() {
   };
 
   const handleCloudLogin = async () => {
+    // Call signInWithPopup immediately on click before React state updates so browsers do not block the popup
+    const popupPromise = signInWithPopup(auth, googleProvider);
+    setCloudSyncing(true);
+    setCloudSyncMsg('Đang mở cửa sổ đăng nhập Google...');
     try {
-      setCloudSyncing(true);
-      const cred = await signInWithPopup(auth, googleProvider);
+      const cred = await popupPromise;
       if (cred?.user?.email) {
         const norm = setSavedSyncKey(cred.user.email);
         setCloudSyncKey(norm);
@@ -730,13 +749,38 @@ export default function App() {
       await syncWithCloudNow(true);
       setShowCloudModal(false);
     } catch (err: any) {
-      const msg = String(err?.message || err?.code || '');
-      if (msg.includes('unauthorized-domain') || msg.includes('popup')) {
+      const code = String(err?.code || '');
+      const msg = String(err?.message || '');
+      const isTopLevelWindow = (() => {
+        try {
+          return window.self === window.top;
+        } catch {
+          return false;
+        }
+      })();
+
+      if (code === 'auth/popup-blocked' && isTopLevelWindow) {
+        try {
+          setCloudSyncMsg('Trình duyệt đang chặn cửa sổ bật lên, đang chuyển sang đăng nhập Google toàn trang...');
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirErr: any) {
+          setCloudSyncMsg('Không thể chuyển hướng đăng nhập Google: ' + (redirErr?.message || redirErr?.code || ''));
+          return;
+        }
+      }
+
+      if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
+        const currentHost = window.location.hostname;
         setCloudSyncMsg(
-          'Tên miền hiện tại (Vercel/TV) chặn cửa sổ Google Popup. Hãy nhập trực tiếp Email hoặc Mã đồng bộ của bạn ở ô bên trên để đồng bộ ngay!'
+          `Tên miền "${currentHost}" chưa được cấp quyền trong Firebase Console (Authentication -> Settings -> Authorized domains). Hãy thêm "${currentHost}" vào danh sách tên miền được phép để đăng nhập Google trực tiếp trên Vercel.`
         );
+      } else if (code === 'auth/popup-blocked') {
+        setCloudSyncMsg('Trình duyệt đang chặn cửa sổ bật lên (Popup). Vui lòng bấm "Cho phép pop-up" trên thanh địa chỉ trình duyệt rồi thử lại.');
+      } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setCloudSyncMsg('Bạn đã đóng cửa sổ đăng nhập Google. Bấm lại nút bên dưới để đăng nhập.');
       } else {
-        setCloudSyncMsg('Hãy nhập Mã đồng bộ / Email ở ô bên trên để đồng bộ trực tiếp.');
+        setCloudSyncMsg('Lỗi đăng nhập Google: ' + (code || msg || 'Vui lòng thử lại.'));
       }
     } finally {
       setCloudSyncing(false);
@@ -4960,20 +5004,32 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
               </div>
 
               <div className="pt-3 border-t border-stone-200 dark:border-slate-800 space-y-2">
-                <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Hoặc đăng nhập bằng Google (tùy chọn):</label>
-                <button
-                  onClick={handleCloudLogin}
-                  disabled={cloudSyncing}
-                  className="w-full py-2.5 bg-white dark:bg-slate-800 border border-stone-300 dark:border-slate-700 hover:bg-stone-50 text-stone-800 dark:text-slate-200 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-xs"
-                >
-                  <svg className="w-4 h-4" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
-                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.13 0-5.78-2.11-6.73-4.96H1.18v3.15C3.15 21.32 7.23 24 12 24z"/>
-                    <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.18C.43 8.13 0 9.83 0 12s.43 3.87 1.18 5.39l4.09-3.15z"/>
-                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.23 0 3.15 2.68 1.18 6.61l4.09 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
-                  </svg>
-                  {cloudUser ? `Đang kết nối (${cloudUser.email})` : 'Đăng nhập tài khoản Google'}
-                </button>
+                <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Đăng nhập bằng tài khoản Google:</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCloudLogin}
+                    disabled={cloudSyncing}
+                    className="flex-1 py-2.5 bg-white dark:bg-slate-800 border border-stone-300 dark:border-slate-700 hover:bg-stone-50 text-stone-800 dark:text-slate-200 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-xs"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
+                      <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.13 0-5.78-2.11-6.73-4.96H1.18v3.15C3.15 21.32 7.23 24 12 24z"/>
+                      <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.18C.43 8.13 0 9.83 0 12s.43 3.87 1.18 5.39l4.09-3.15z"/>
+                      <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.23 0 3.15 2.68 1.18 6.61l4.09 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
+                    </svg>
+                    {cloudUser ? `Đang kết nối (${cloudUser.email}) – Đổi tài khoản` : 'Đăng nhập tài khoản Google'}
+                  </button>
+                  {cloudUser && (
+                    <button
+                      type="button"
+                      onClick={handleCloudLogout}
+                      className="px-3 py-2.5 bg-stone-100 dark:bg-slate-800 text-stone-600 dark:text-slate-300 text-xs font-bold rounded-xl hover:bg-red-50 hover:text-red-600 transition"
+                    >
+                      Đăng xuất
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="pt-2 border-t border-stone-200 dark:border-slate-800 flex flex-wrap gap-2 justify-between items-center">

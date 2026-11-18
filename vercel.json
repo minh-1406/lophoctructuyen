@@ -8,13 +8,28 @@
       "maxDuration": 60
     }
   },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin-allow-popups"
+        }
+      ]
+    }
+  ],
   "rewrites": [
+    {
+      "source": "/__/auth/(.*)",
+      "destination": "https://micro-banner-55xj8.firebaseapp.com/__/auth/$1"
+    },
     {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/((?!api/|__/).*)",
       "destination": "/index.html"
     }
   ]
