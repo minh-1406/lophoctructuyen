@@ -63,6 +63,7 @@ const getResponseSchema = (schemaType?: string) => {
           },
           type: {
             type: Type.STRING,
+            enum: ['cloud', 'open', 'poll', 'quiz', 'scale', 'draw'],
             description: 'One of: cloud, open, poll, quiz, scale, draw',
           },
           q: {

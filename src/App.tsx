@@ -1389,7 +1389,8 @@ export default function App() {
 
   // AI Auto-Insert Interactive Slides (works for imported .pptx/.pdf and any existing lesson slides)
   const autoInsertInteractiveSlides = async (targetCountOverride?: number) => {
-    const base = lesson.slides.filter(x => !x.auto);
+    const activeSlides = (lessonRef.current?.slides || lesson.slides || []);
+    const base = activeSlides.filter(x => !x.auto);
     const hasContent = base.some(
       x => (x.q || '').trim() || (x.b || '').trim() || (x.tx || '').trim() || (x.imgs && x.imgs.length > 0) || !!x.vid
     );
@@ -1403,8 +1404,53 @@ export default function App() {
     const countToInsert = Math.max(1, Math.min(20, Number(targetCountOverride || aiQuestionCount || 4)));
 
     setIsAutoInserting(true);
-    setAutoInsertMsg(`AI đang đọc nội dung từng slide và chọn chỗ chèn ${countToInsert} câu hỏi tương tác...`);
-    setGenMsg(`AI đang đọc nội dung từng slide và chọn chỗ chèn ${countToInsert} câu hỏi tương tác...`);
+    setAutoInsertMsg(`AI đang đọc nội dung từng slide và chọn chỗ chèn đúng ${countToInsert} câu hỏi tương tác...`);
+    setGenMsg(`AI đang đọc nội dung từng slide và chọn chỗ chèn đúng ${countToInsert} câu hỏi tương tác...`);
+
+    const normalizeAiSlideType = (rawType: any): Slide['type'] | null => {
+      const t = String(rawType || '').trim().toLowerCase();
+      if (t === 'cloud' || t === 'word_cloud' || t === 'wordcloud' || t === 'đám mây từ') return 'cloud';
+      if (t === 'open' || t === 'discussion' || t === 'essay' || t === 'text' || t === 'câu hỏi mở') return 'open';
+      if (t === 'poll' || t === 'survey' || t === 'vote' || t === 'bình chọn') return 'poll';
+      if (t === 'quiz' || t === 'mcq' || t === 'multiple_choice' || t === 'multiple-choice' || t === 'trắc nghiệm') return 'quiz';
+      if (t === 'scale' || t === 'rating' || t === 'likert' || t === 'thang điểm') return 'scale';
+      if (t === 'draw' || t === 'drawing' || t === 'sketch' || t === 'vẽ') return 'draw';
+      return null;
+    };
+
+    const normalizeItemToSlide = (x: any, fallbackAfterIdx: number): { afterIdx: number; slide: Slide } | null => {
+      if (!x) return null;
+      const qText = String(x.q || x.question || x.title || '').trim();
+      if (!qText) return null;
+      const slideType = normalizeAiSlideType(x.type) || 'open';
+      const normalized: Slide = {
+        type: slideType,
+        q: qText,
+        auto: true,
+        aiGenerated: true,
+        duration: defaultAiTimerSec > 0 ? defaultAiTimerSec : undefined,
+      };
+      if (slideType === 'poll' || slideType === 'quiz') {
+        const cleanOpts = Array.isArray(x.opts)
+          ? x.opts.map((o: any) => String(o || '').trim()).filter(Boolean)
+          : [];
+        const resolvedOpts = cleanOpts.length >= 2 ? cleanOpts : ['Lựa chọn A', 'Lựa chọn B', 'Lựa chọn C', 'Lựa chọn D'];
+        normalized.opts = resolvedOpts;
+        if (slideType === 'quiz') {
+          const ansIdx = Number.isFinite(Number(x.a)) ? Math.trunc(Number(x.a)) : 0;
+          normalized.a = Math.max(0, Math.min(resolvedOpts.length - 1, ansIdx));
+        }
+      }
+      if (slideType === 'open') {
+        normalized.ai = x.ai !== undefined ? !!x.ai : true;
+      }
+
+      let afterIdx = Number(x.after);
+      if (Number.isNaN(afterIdx)) afterIdx = fallbackAfterIdx;
+      afterIdx = Math.max(-1, Math.min(base.length - 1, Math.trunc(afterIdx)));
+
+      return { afterIdx, slide: normalized };
+    };
 
     try {
       const list = base
@@ -1415,70 +1461,57 @@ export default function App() {
         .slice(0, 45)
         .join('\n');
 
-      const raw = await callAi(
-        `Bạn là trợ lý thiết kế bài giảng sư phạm tương tác thông minh và sáng tạo tiếng Việt.
-Tên bài giảng: "${lesson.title || 'Bài giảng trên lớp'}".
-Dưới đây là danh sách các slide hiện có (số thứ tự từ 0 đến ${base.length - 1}):
-${list}
+      const collected: { afterIdx: number; slide: Slide }[] = [];
+      const seenQuestions = new Set<string>();
 
-Các slide hiện có phải được GIỮ NGUYÊN. Hãy chọn vị trí phù hợp để chèn thêm đúng ${countToInsert} slide câu hỏi tương tác bám sát nội dung bài giảng.
-Quy tắc cực kỳ quan trọng:
+      for (let pass = 0; pass < 3 && collected.length < countToInsert; pass++) {
+        const remaining = countToInsert - collected.length;
+        const existingListText = collected.length
+          ? `\nCác câu hỏi đã tạo trước đó (KHÔNG lặp lại):\n${collected.map((c, idx) => `${idx + 1}. [${c.slide.type}] ${c.slide.q}`).join('\n')}`
+          : '';
+
+        const raw = await callAi(
+          `Bạn là trợ lý thiết kế bài giảng sư phạm tương tác thông minh và sáng tạo tiếng Việt.
+Tên bài giảng: "${lessonRef.current.title || lesson.title || 'Bài giảng trên lớp'}".
+Dưới đây là danh sách các slide hiện có (chỉ số từ 0 đến ${base.length - 1}):
+${list}${existingListText}
+
+YÊU CẦU BẮT BUỘC:
+- Hãy tạo và trả về một mảng JSON gồm ĐÚNG ${remaining} câu hỏi tương tác mới (không nhiều hơn, không ít hơn ${remaining} phần tử).
+- Có thể chèn nhiều câu hỏi vào cùng một vị trí "after" (từ -1 đến ${base.length - 1}) nếu số slide gốc ít hơn ${countToInsert}.
 - "after": số nguyên từ -1 đến ${base.length - 1} (-1 là chèn vào đầu bài, i là chèn ngay sau slide thứ i).
-- "type": phải sử dụng đa dạng các loại câu hỏi phong phú sau đây:
+- "type": CHỈ dùng 1 trong 6 giá trị chính xác: "cloud", "open", "poll", "quiz", "scale", "draw".
   1. "cloud" (Đám mây từ / từ khóa nhanh)
-  2. "open" (Câu hỏi mở tự luận, thảo luận sâu, yêu cầu đặt "ai": true)
-  3. "poll" (Bình chọn / Khảo sát ý kiến học sinh, bắt buộc có "opts" gồm 3–4 lựa chọn)
-  4. "quiz" (Trắc nghiệm kiểm tra kiến thức đúng/sai, bắt buộc có "opts" gồm 3–4 lựa chọn và "a" là chỉ số đáp án đúng từ 0)
-  5. "scale" (Thang điểm đánh giá từ 1 đến 5 mức độ hiểu bài / tự tin)
-  6. "draw" (Vẽ sơ đồ tư duy hoặc minh họa trực quan nhanh)
-- "q": câu hỏi ngắn gọn, rõ ràng, sâu sắc bằng tiếng Việt cho học sinh trả lời.
-Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, quiz, scale, draw) xuyên suốt bài giảng.`,
-        { json: true, schemaType: 'autoInsert' }
-      );
+  2. "open" (Câu hỏi mở tự luận, đặt "ai": true)
+  3. "poll" (Bình chọn, bắt buộc có "opts" gồm 3–4 lựa chọn)
+  4. "quiz" (Trắc nghiệm, bắt buộc có "opts" gồm 3–4 lựa chọn và "a" là chỉ số đáp án đúng từ 0)
+  5. "scale" (Thang điểm 1–5)
+  6. "draw" (Vẽ sơ đồ tư duy / minh họa)
+- "q": câu hỏi ngắn gọn, rõ ràng bằng tiếng Việt bám sát nội dung bài giảng.
+Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loại câu hỏi.`,
+          { json: true, schemaType: 'autoInsert' }
+        );
 
-      const items = Array.isArray(raw) ? raw : Array.isArray(raw?.slides) ? raw.slides : Array.isArray(raw?.items) ? raw.items : null;
-      if (!items) throw new Error('Dữ liệu AI trả về không đúng định dạng danh sách.');
-
-      const validTypes: Slide['type'][] = ['cloud', 'open', 'poll', 'quiz', 'scale', 'draw'];
-      const ins: Record<number, Slide[]> = {};
-      let insertedCount = 0;
-
-      items.forEach((x: any) => {
-        if (!x || !x.q || !validTypes.includes(x.type)) return;
-        const slideType = x.type as Slide['type'];
-        const normalized: Slide = {
-          type: slideType,
-          q: String(x.q).trim(),
-          auto: true,
-          aiGenerated: true,
-          duration: defaultAiTimerSec > 0 ? defaultAiTimerSec : undefined,
-        };
-        if (slideType === 'poll' || slideType === 'quiz') {
-          const cleanOpts = Array.isArray(x.opts)
-            ? x.opts.map((o: any) => String(o || '').trim()).filter(Boolean)
-            : [];
-          const resolvedOpts = cleanOpts.length >= 2 ? cleanOpts : ['Lựa chọn A', 'Lựa chọn B', 'Lựa chọn C', 'Lựa chọn D'];
-          normalized.opts = resolvedOpts;
-          if (slideType === 'quiz') {
-            const ansIdx = Number.isFinite(Number(x.a)) ? Math.trunc(Number(x.a)) : 0;
-            normalized.a = Math.max(0, Math.min(resolvedOpts.length - 1, ansIdx));
-          }
+        const items = Array.isArray(raw) ? raw : Array.isArray(raw?.slides) ? raw.slides : Array.isArray(raw?.items) ? raw.items : [];
+        for (let k = 0; k < items.length && collected.length < countToInsert; k++) {
+          const defaultPos = Math.min(base.length - 1, Math.floor(((collected.length + 1) * base.length) / (countToInsert + 1)));
+          const parsed = normalizeItemToSlide(items[k], defaultPos);
+          if (!parsed) continue;
+          const qKey = parsed.slide.q.toLowerCase();
+          if (seenQuestions.has(qKey)) continue;
+          seenQuestions.add(qKey);
+          collected.push(parsed);
         }
-        if (slideType === 'open' && x.ai) {
-          normalized.ai = true;
-        }
+      }
 
-        let afterIdx = Number(x.after);
-        if (Number.isNaN(afterIdx)) afterIdx = base.length - 1;
-        afterIdx = Math.max(-1, Math.min(base.length - 1, Math.trunc(afterIdx)));
-
-        (ins[afterIdx] = ins[afterIdx] || []).push(normalized);
-        insertedCount++;
-      });
-
-      if (!insertedCount) {
+      if (!collected.length) {
         throw new Error('AI không tạo được câu hỏi phù hợp.');
       }
+
+      const ins: Record<number, Slide[]> = {};
+      collected.slice(0, countToInsert).forEach(({ afterIdx, slide }) => {
+        (ins[afterIdx] = ins[afterIdx] || []).push(slide);
+      });
 
       const r2: Slide[] = [...(ins[-1] || [])];
       base.forEach((x, i) => {
@@ -1486,6 +1519,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
         (ins[i] || []).forEach(y => r2.push(y));
       });
 
+      const insertedCount = collected.slice(0, countToInsert).length;
       const nextLesson: Lesson = { ...lessonRef.current, slides: r2 };
       setLesson(nextLesson);
       lessonRef.current = nextLesson;
@@ -3423,7 +3457,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                   className="px-3.5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-semibold rounded-xl text-xs transition flex items-center gap-1.5"
                 >
                   <Sparkles className={`w-3.5 h-3.5 ${isAutoInserting ? 'animate-spin' : ''}`} />
-                  {isAutoInserting ? 'AI đang chèn...' : 'AI tự chèn câu hỏi tương tác'}
+                  {isAutoInserting ? 'AI đang chèn...' : `AI tự chèn ${aiQuestionCount} câu hỏi`}
                 </button>
                 <button onClick={() => addSlideType('open')} className="px-3 py-2 bg-purple-50 dark:bg-purple-950 text-purple-600 dark:text-purple-300 font-semibold rounded-xl text-xs hover:bg-purple-100 transition">
                   + Câu hỏi mở
