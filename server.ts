@@ -117,7 +117,140 @@ async function startServer() {
   const httpServer = http.createServer(app);
   const PORT = 3000;
 
-  app.use(express.json({ limit: '25mb' }));
+  app.use(express.json({ limit: '100mb' }));
+
+  const dataDir = path.resolve(__dirname, '.data');
+  const storeFile = path.join(dataDir, 'dashboard-store.json');
+
+  interface OwnerStoreData {
+    lessons: Record<string, { id: string; updatedAt: string; serialized: string }>;
+    reports: Record<string, any>;
+    deletedLessonIds: string[];
+    deletedReportIds: string[];
+  }
+
+  const readStore = (): Record<string, OwnerStoreData> => {
+    try {
+      if (fs.existsSync(storeFile)) {
+        const raw = fs.readFileSync(storeFile, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {
+      // ignore read errors
+    }
+    return {};
+  };
+
+  const writeStore = (store: Record<string, OwnerStoreData>) => {
+    try {
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      fs.writeFileSync(storeFile, JSON.stringify(store), 'utf-8');
+    } catch {
+      // ignore write errors
+    }
+  };
+
+  const getOwnerBucket = (store: Record<string, OwnerStoreData>, ownerId: string): OwnerStoreData => {
+    const key = (ownerId || 'sync_quangminh1485').trim() || 'sync_quangminh1485';
+    if (!store[key]) {
+      store[key] = {
+        lessons: {},
+        reports: {},
+        deletedLessonIds: [],
+        deletedReportIds: [],
+      };
+    }
+    return store[key];
+  };
+
+  app.get('/api/storage/all', (req, res) => {
+    const ownerId = String(req.query.ownerId || 'sync_quangminh1485');
+    const store = readStore();
+    const bucket = getOwnerBucket(store, ownerId);
+    res.json({
+      lessons: Object.values(bucket.lessons || {}),
+      reports: Object.values(bucket.reports || {}),
+      deletedLessonIds: bucket.deletedLessonIds || [],
+      deletedReportIds: bucket.deletedReportIds || [],
+    });
+  });
+
+  app.post('/api/storage/lesson', (req, res) => {
+    try {
+      const { ownerId, id, updatedAt, serialized } = req.body || {};
+      if (!id || typeof serialized !== 'string') {
+        res.status(400).json({ error: 'Thiếu dữ liệu bài giảng.' });
+        return;
+      }
+      const store = readStore();
+      const bucket = getOwnerBucket(store, String(ownerId || 'sync_quangminh1485'));
+      bucket.lessons[id] = {
+        id: String(id),
+        updatedAt: String(updatedAt || new Date().toISOString()),
+        serialized,
+      };
+      bucket.deletedLessonIds = (bucket.deletedLessonIds || []).filter(x => x !== id);
+      writeStore(store);
+      res.json({ ok: true, id });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Lỗi lưu bài giảng.' });
+    }
+  });
+
+  app.delete('/api/storage/lesson/:id', (req, res) => {
+    try {
+      const id = String(req.params.id || '');
+      const ownerId = String(req.query.ownerId || 'sync_quangminh1485');
+      const store = readStore();
+      const bucket = getOwnerBucket(store, ownerId);
+      delete bucket.lessons[id];
+      if (!bucket.deletedLessonIds.includes(id)) {
+        bucket.deletedLessonIds.push(id);
+      }
+      writeStore(store);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Lỗi xóa bài giảng.' });
+    }
+  });
+
+  app.post('/api/storage/report', (req, res) => {
+    try {
+      const { ownerId, report } = req.body || {};
+      if (!report || !report.id) {
+        res.status(400).json({ error: 'Thiếu dữ liệu thống kê.' });
+        return;
+      }
+      const store = readStore();
+      const bucket = getOwnerBucket(store, String(ownerId || 'sync_quangminh1485'));
+      bucket.reports[report.id] = report;
+      bucket.deletedReportIds = (bucket.deletedReportIds || []).filter(x => x !== report.id);
+      writeStore(store);
+      res.json({ ok: true, id: report.id });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Lỗi lưu thống kê.' });
+    }
+  });
+
+  app.delete('/api/storage/report/:id', (req, res) => {
+    try {
+      const id = String(req.params.id || '');
+      const ownerId = String(req.query.ownerId || 'sync_quangminh1485');
+      const store = readStore();
+      const bucket = getOwnerBucket(store, ownerId);
+      delete bucket.reports[id];
+      if (!bucket.deletedReportIds.includes(id)) {
+        bucket.deletedReportIds.push(id);
+      }
+      writeStore(store);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Lỗi xóa thống kê.' });
+    }
+  });
 
   app.post('/api/gemini/generate', async (req, res) => {
     try {

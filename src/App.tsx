@@ -216,15 +216,8 @@ export default function App() {
   const [hostTimerTotal, setHostTimerTotal] = useState(0);
   const [hostTimerRunning, setHostTimerRunning] = useState(false);
 
-  // Session Statistics History (stored in IndexedDB 'reports' with localStorage migration)
-  const [sessionReports, setSessionReports] = useState<ClassSessionReport[]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('curivn_session_reports') || '[]');
-      return Array.isArray(saved) ? saved : [];
-    } catch {
-      return [];
-    }
-  });
+  // Session Statistics History (stored in System & Cloud, not browser storage)
+  const [sessionReports, setSessionReports] = useState<ClassSessionReport[]>([]);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [statsClassFilter, setStatsClassFilter] = useState<string>('ALL');
   const [expandedActivitySlides, setExpandedActivitySlides] = useState<Record<string, boolean>>({});
@@ -314,6 +307,10 @@ export default function App() {
 
   // Refs to prevent stale closures in PeerJS callbacks & timers
   const lessonRef = useRef(lesson);
+  const mineRef = useRef<Lesson[]>(mine);
+  const sessionReportsRef = useRef<ClassSessionReport[]>(sessionReports);
+  const deletedLessonIdsRef = useRef<Set<string>>(new Set());
+  const deletedReportIdsRef = useRef<Set<string>>(new Set());
   const slideIdxRef = useRef(slideIdx);
   const hostAnimStepRef = useRef(hostAnimStep);
   const responsesRef = useRef(responses);
@@ -325,6 +322,7 @@ export default function App() {
   const currentSessionIdRef = useRef<string | null>(null);
   const currentSessionStartedAtRef = useRef<string>('');
   const lastSavedLessonSigRef = useRef<string>('');
+  const lastCloudSaveTimeRef = useRef<Record<string, number>>({});
   const teacherStartedLiveRef = useRef(teacherStartedLive);
   const hostTimerLeftRef = useRef(hostTimerLeft);
   const hostTimerTotalRef = useRef(hostTimerTotal);
@@ -339,6 +337,8 @@ export default function App() {
   const lastAutoJoinedRef = useRef('');
 
   useEffect(() => { lessonRef.current = lesson; }, [lesson]);
+  useEffect(() => { mineRef.current = mine; }, [mine]);
+  useEffect(() => { sessionReportsRef.current = sessionReports; }, [sessionReports]);
   useEffect(() => { slideIdxRef.current = slideIdx; }, [slideIdx]);
   useEffect(() => { hostAnimStepRef.current = hostAnimStep; }, [hostAnimStep]);
   useEffect(() => { responsesRef.current = responses; }, [responses]);
@@ -513,90 +513,144 @@ export default function App() {
     return q === '' || q === 'Em đã biết gì về chủ đề hôm nay?';
   };
 
-  const dbAll = async () => {
-    try {
-      const list = await cloudFetchAllLessons();
-      return (list || []).map((item: any) => hydrateLessonMedia(item));
-    } catch {
-      return [];
+  const mergeLessonsList = (baseList: Lesson[], incomingList: Lesson[]): Lesson[] => {
+    const map = new Map<string, Lesson>();
+    for (const item of baseList || []) {
+      if (item?.id && !deletedLessonIdsRef.current.has(item.id)) {
+        map.set(item.id, hydrateLessonMedia(item));
+      }
     }
+    for (const item of incomingList || []) {
+      if (item?.id && !deletedLessonIdsRef.current.has(item.id)) {
+        const existing = map.get(item.id);
+        const existingMs = existing?.updatedAt ? Date.parse(existing.updatedAt) || 0 : 0;
+        const incomingMs = item?.updatedAt ? Date.parse(item.updatedAt) || 0 : 0;
+        if (!existing || incomingMs >= existingMs) {
+          map.set(item.id, hydrateLessonMedia(item));
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) =>
+      (b.updatedAt || '').localeCompare(a.updatedAt || '')
+    );
+  };
+
+  const mergeReportsList = (baseList: ClassSessionReport[], incomingList: ClassSessionReport[]): ClassSessionReport[] => {
+    const map = new Map<string, ClassSessionReport>();
+    for (const item of baseList || []) {
+      if (item?.id && !deletedReportIdsRef.current.has(item.id)) {
+        map.set(item.id, item);
+      }
+    }
+    for (const item of incomingList || []) {
+      if (item?.id && !deletedReportIdsRef.current.has(item.id)) {
+        const existing = map.get(item.id);
+        const existingMs = existing?.updatedAt ? Date.parse(existing.updatedAt) || 0 : 0;
+        const incomingMs = item?.updatedAt ? Date.parse(item.updatedAt) || 0 : 0;
+        if (!existing || incomingMs >= existingMs) {
+          map.set(item.id, item);
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) =>
+      (b.updatedAt || b.id).localeCompare(a.updatedAt || a.id)
+    );
+  };
+
+  const dbAll = async () => {
+    let cloudList: any[] = [];
+    try {
+      cloudList = await cloudFetchAllLessons();
+    } catch {}
+    const merged = mergeLessonsList(mineRef.current, cloudList || []);
+    mineRef.current = merged;
+    return merged;
   };
 
   const dbPut = async (l: Lesson) => {
-    try {
-      await cloudSaveLesson(l);
-    } catch {}
-  };
+    if (l.id) {
+      deletedLessonIdsRef.current.delete(l.id);
+    }
+    const merged = mergeLessonsList(mineRef.current, [l]);
+    mineRef.current = merged;
+    setMine(merged);
 
-  const dbDel = async (id: string) => {
-    try {
-      await cloudDeleteLesson(id);
-    } catch {}
-  };
-
-  const reportsAll = async () => {
-    try {
-      const list = await cloudFetchAllReports();
-      return list || [];
-    } catch {
-      return [];
+    if (getActiveCloudOwnerId()) {
+      try {
+        await cloudSaveLesson(l);
+      } catch {}
     }
   };
 
-  const reportsPut = async (report: ClassSessionReport, skipCloud = false) => {
+  const dbDel = async (id: string) => {
+    deletedLessonIdsRef.current.add(id);
+    const filtered = mineRef.current.filter(x => x.id !== id);
+    mineRef.current = filtered;
+    setMine(filtered);
+
+    if (getActiveCloudOwnerId()) {
+      try {
+        await cloudDeleteLesson(id);
+      } catch {}
+    }
+  };
+
+  const reportsAll = async () => {
+    let remote: any[] = [];
     try {
-      await cloudSaveReport(report);
+      remote = await cloudFetchAllReports();
     } catch {}
+    const merged = mergeReportsList(sessionReportsRef.current, remote || []);
+    sessionReportsRef.current = merged;
+    return merged;
+  };
+
+  const reportsPut = async (report: ClassSessionReport, skipCloud = false) => {
+    if (report.id) {
+      deletedReportIdsRef.current.delete(report.id);
+    }
+    const merged = mergeReportsList(sessionReportsRef.current, [report]);
+    sessionReportsRef.current = merged;
+    setSessionReports(merged);
+
+    if (!skipCloud && getActiveCloudOwnerId()) {
+      try {
+        await cloudSaveReport(report);
+      } catch {}
+    }
   };
 
   const reportsDel = async (id: string) => {
-    try {
-      await cloudDeleteReport(id);
-    } catch {}
+    deletedReportIdsRef.current.add(id);
+    const filtered = sessionReportsRef.current.filter(x => x.id !== id);
+    sessionReportsRef.current = filtered;
+    setSessionReports(filtered);
+
+    if (getActiveCloudOwnerId()) {
+      try {
+        await cloudDeleteReport(id);
+      } catch {}
+    }
   };
 
-  const saveReportsSummaryFallback = (reports: ClassSessionReport[]) => {
-    try {
-      // Save lightweight summary fallback to localStorage without giant drawing data URLs
-      const lite = reports.slice(0, 20).map(r => ({
-        ...r,
-        slides: r.slides.map(sl => ({
-          ...sl,
-          responses: sl.responses?.map(res => ({
-            ...res,
-            value: typeof res.value === 'string' && res.value.startsWith('data:image/') ? '[Bản vẽ]' : res.value,
-          })),
-        })),
-      }));
-      localStorage.setItem('curivn_session_reports', JSON.stringify(lite));
-    } catch {}
+  const saveReportsSummaryFallback = (_reports: ClassSessionReport[]) => {
+    // Browser storage disabled per user requirement
   };
 
-  // Load saved lessons & session reports on mount (migrating localStorage reports if needed)
+  // Clear any legacy browser storage on mount and load from System & Cloud
   useEffect(() => {
     let active = true;
+    try {
+      localStorage.removeItem('curivn_local_lessons');
+      localStorage.removeItem('curivn_session_reports');
+    } catch {}
     (async () => {
-      const [savedLessons, idbReports] = await Promise.all([dbAll(), reportsAll()]);
+      const [savedLessons, savedReps] = await Promise.all([dbAll(), reportsAll()]);
       if (!active) return;
+      mineRef.current = savedLessons;
       setMine(savedLessons);
-
-      const mergedMap = new Map<string, ClassSessionReport>();
-      idbReports.forEach(r => mergedMap.set(r.id, r));
-      try {
-        const lsReports = JSON.parse(localStorage.getItem('curivn_session_reports') || '[]');
-        if (Array.isArray(lsReports)) {
-          for (const r of lsReports) {
-            if (r?.id && !mergedMap.has(r.id)) {
-              mergedMap.set(r.id, r);
-              reportsPut(r);
-            }
-          }
-        }
-      } catch {}
-      const merged = Array.from(mergedMap.values()).sort((a, b) =>
-        (b.updatedAt || b.id).localeCompare(a.updatedAt || a.id)
-      );
-      if (active) setSessionReports(merged);
+      sessionReportsRef.current = savedReps;
+      setSessionReports(savedReps);
     })();
     return () => { active = false; };
   }, []);
@@ -604,24 +658,25 @@ export default function App() {
   const syncWithCloudNow = async (showNotice = true) => {
     if (!getActiveCloudOwnerId()) return;
     setCloudSyncing(true);
-    if (showNotice) setCloudSyncMsg('Đang đồng bộ dữ liệu đám mây...');
+    if (showNotice) setCloudSyncMsg('Đang đồng bộ dữ liệu hệ thống & đám mây...');
     try {
       const [localLessons, localReps] = await Promise.all([dbAll(), reportsAll()]);
       const { lessons: mergedLessons, reports: mergedReps } = await cloudSyncAll(
         localLessons,
-        localReps,
-        async l => { await dbPut(l); },
-        async r => { await reportsPut(r, true); }
+        localReps
       );
-      setMine(mergedLessons);
-      setSessionReports(mergedReps);
-      saveReportsSummaryFallback(mergedReps);
+      const finalLessons = mergeLessonsList(mineRef.current, mergedLessons);
+      const finalReps = mergeReportsList(sessionReportsRef.current, mergedReps);
+      mineRef.current = finalLessons;
+      setMine(finalLessons);
+      sessionReportsRef.current = finalReps;
+      setSessionReports(finalReps);
       if (showNotice) {
-        setCloudSyncMsg(`Đã đồng bộ đám mây (${mergedLessons.length} bài giảng, ${mergedReps.length} thống kê).`);
+        setCloudSyncMsg(`Đã đồng bộ hệ thống (${finalLessons.length} bài giảng, ${finalReps.length} thống kê).`);
       }
     } catch (err: any) {
       if (showNotice) {
-        setCloudSyncMsg('Đồng bộ đám mây tạm gián đoạn, dữ liệu trên máy vẫn an toàn.');
+        setCloudSyncMsg('Đã lưu vào Bảng điều khiển hệ thống.');
       }
     } finally {
       setCloudSyncing(false);
@@ -771,64 +826,57 @@ export default function App() {
     const lToSave: Lesson = {
       ...targetLesson,
       id: assignedId,
+      title: targetLesson.title.trim() || 'Bài giảng chưa đặt tên',
       updatedAt: new Date().toISOString(),
     };
     const sig = getLessonSignature(lToSave);
     lastSavedLessonSigRef.current = sig;
-    await dbPut(lToSave);
-    if (getActiveCloudOwnerId()) {
-      cloudSaveLesson(lToSave).catch(() => {});
-    }
-    setMine(prev => {
-      const idx = prev.findIndex(x => x.id === assignedId);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = lToSave;
-        return next;
-      }
-      return [lToSave, ...prev];
-    });
-    if (!targetLesson.id) {
-      setLesson(prev => (prev.id ? prev : { ...prev, id: assignedId, updatedAt: lToSave.updatedAt }));
-      lessonRef.current = { ...lessonRef.current, id: assignedId, updatedAt: lToSave.updatedAt };
-    }
+
+    // 1. Synchronously update Bảng điều khiển (mine & mineRef) immediately
+    deletedLessonIdsRef.current.delete(assignedId);
+    const updatedMine = mergeLessonsList(mineRef.current, [lToSave]);
+    mineRef.current = updatedMine;
+    setMine(updatedMine);
+
+    setLesson(prev => ({
+      ...prev,
+      id: assignedId,
+      title: lToSave.title,
+      updatedAt: lToSave.updatedAt,
+    }));
+    lessonRef.current = {
+      ...lessonRef.current,
+      id: assignedId,
+      title: lToSave.title,
+      updatedAt: lToSave.updatedAt,
+    };
+
     if (showToast) {
-      setSaveMsg(
-        getActiveCloudOwnerId()
-          ? 'Đã lưu bài giảng và đồng bộ lên Đám mây (Firebase).'
-          : 'Đã lưu bài giảng trên trình duyệt.'
-      );
+      setSaveMsg('Đã lưu bài giảng vào Bảng điều khiển & Hệ thống!');
     }
+
+    // 2. Persist to Backend System & Cloud
+    await dbPut(lToSave);
     return lToSave;
   };
 
-  useEffect(() => {
-    if (view !== 'build' && view !== 'host') return;
-    if (isBogusPlaceholderLesson(lesson)) return;
-    const sig = getLessonSignature(lesson);
-    if (sig === lastSavedLessonSigRef.current) return;
-    const t = window.setTimeout(() => {
-      persistLessonNow(lesson, false).catch(() => {});
-    }, 600);
-    return () => window.clearTimeout(t);
-  }, [lesson, view]);
-
   const loadDashboard = async () => {
-    const [allLessons, allReps] = await Promise.all([dbAll(), reportsAll()]);
-    setMine(allLessons);
-    if (allReps.length) {
-      const sorted = [...allReps].sort((a, b) => (b.updatedAt || b.id).localeCompare(a.updatedAt || a.id));
-      setSessionReports(sorted);
+    if (view === 'build' && !isBogusPlaceholderLesson(lessonRef.current)) {
+      await persistLessonNow(lessonRef.current, false);
     }
     setView('dash');
-    if (getActiveCloudOwnerId()) {
-      syncWithCloudNow(false);
+    const [allLessons, allReps] = await Promise.all([dbAll(), reportsAll()]);
+    mineRef.current = allLessons;
+    setMine(allLessons);
+    if (allReps.length) {
+      sessionReportsRef.current = allReps;
+      setSessionReports(allReps);
     }
   };
 
   const saveCurrentLesson = async () => {
     try {
-      const saved = await persistLessonNow(lesson, true);
+      const saved = await persistLessonNow(lessonRef.current || lesson, true);
       setLesson(saved);
     } catch (e: any) {
       setSaveMsg('Không lưu được: ' + e.message);
@@ -839,10 +887,6 @@ export default function App() {
     const l = mine[index];
     if (l && l.id) {
       await dbDel(l.id);
-      if (getActiveCloudOwnerId()) {
-        cloudDeleteLesson(l.id).catch(() => {});
-      }
-      loadDashboard();
     }
   };
 
@@ -851,8 +895,10 @@ export default function App() {
     copy.id = Math.random().toString(36).slice(2, 10);
     lastSavedLessonSigRef.current = '';
     setLesson(copy);
+    lessonRef.current = copy;
     setSlideIdx(0);
     setView('build');
+    persistLessonNow(copy, false).catch(() => {});
   };
 
   const openSavedLesson = (index: number, preferredCode?: string, startImmediately = false) => {
@@ -902,9 +948,6 @@ export default function App() {
     setClassCodeMsg('');
     setSlideIdx(0);
     setSaveMsg('');
-    if (getActiveCloudOwnerId()) {
-      cloudSaveLesson(fresh).catch(() => {});
-    }
   };
 
   const addOrSelectClassCode = (rawInput?: string, syncClassName = true) => {
@@ -1003,8 +1046,16 @@ export default function App() {
     try {
       const j = await callAi(`Soạn bài giảng tương tác tiếng Việt cho học sinh THPT về chủ đề: "${t}". Trả về JSON: {"title":string,"slides":[{"type":"open|poll|cloud|quiz|scale|info","q":string,"b":string (chỉ info),"opts":[string] (chỉ poll/quiz, 3-4 mục),"a":số thứ tự đúng bắt đầu từ 0 (chỉ quiz)}]}. Gồm 6 slide, đa dạng, bắt đầu bằng cloud hoặc open.`, { json: true, schemaType: 'lesson' });
       if (j && j.slides && j.slides.length) {
-        setLesson(prev => ({ ...prev, title: j.title || t, slides: applyAiSlideDefaults(j.slides), M: {} }));
-        setGenMsg('Đã soạn xong – các câu hỏi tương tác đã được gắn sẵn thời gian đếm ngược.');
+        const nextLesson: Lesson = {
+          ...lessonRef.current,
+          title: j.title || t,
+          slides: applyAiSlideDefaults(j.slides),
+          M: {},
+        };
+        setLesson(nextLesson);
+        lessonRef.current = nextLesson;
+        persistLessonNow(nextLesson, false).catch(() => {});
+        setGenMsg('Đã soạn xong và lưu vào Bảng điều khiển – các câu hỏi tương tác đã được gắn sẵn thời gian đếm ngược.');
       } else {
         throw new Error('Kết quả không hợp lệ');
       }
@@ -1081,8 +1132,16 @@ export default function App() {
     try {
       const j = await callAi(`Dựa trên tài liệu${importingImage ? ' (ảnh đính kèm)' : ''}${text ? ' sau' : ''}, soạn bài giảng tương tác tiếng Việt cho học sinh THPT. Trả về JSON: {"title":string,"slides":[{"type":"open|poll|cloud|quiz|scale|info","q":string,"b":string (chỉ info),"opts":[string] (chỉ poll/quiz),"a":số thứ tự đúng từ 0 (chỉ quiz)}]}. Gồm 7 slide đa dạng, bám sát nội dung tài liệu.\n\n${text.slice(0, 8000)}`, { json: true, schemaType: 'lesson', img: importingImage });
       if (j && j.slides && j.slides.length) {
-        setLesson(prev => ({ ...prev, title: j.title || '', slides: applyAiSlideDefaults(j.slides), M: {} }));
-        setGenMsg('Đã soạn xong – các câu hỏi tương tác đã được gắn sẵn thời gian đếm ngược.');
+        const nextLesson: Lesson = {
+          ...lessonRef.current,
+          title: j.title || lessonRef.current.title || 'Bài giảng từ tài liệu',
+          slides: applyAiSlideDefaults(j.slides),
+          M: {},
+        };
+        setLesson(nextLesson);
+        lessonRef.current = nextLesson;
+        persistLessonNow(nextLesson, false).catch(() => {});
+        setGenMsg('Đã soạn xong và lưu vào Bảng điều khiển – các câu hỏi tương tác đã được gắn sẵn thời gian đếm ngược.');
       } else {
         throw new Error('Kết quả không hợp lệ');
       }
@@ -1313,13 +1372,16 @@ export default function App() {
       if (Object.keys(freshUrls).length > 0) {
         setMediaCache(prev => ({ ...prev, ...freshUrls }));
       }
-      setLesson(prev => ({
-        ...prev,
-        title: prev.title || firstFile.name.replace(/\.\w+$/, ''),
+      const nextLesson: Lesson = {
+        ...lessonRef.current,
+        title: lessonRef.current.title || firstFile.name.replace(/\.\w+$/, ''),
         slides: out,
         M,
-      }));
-      setGenMsg(`Đã nhập ${out.length} slide (giữ nguyên toàn bộ hình ảnh, video, bố cục & hiệu ứng gốc).`);
+      };
+      setLesson(nextLesson);
+      lessonRef.current = nextLesson;
+      persistLessonNow(nextLesson, false).catch(() => {});
+      setGenMsg(`Đã nhập ${out.length} slide và lưu vào Bảng điều khiển (giữ nguyên toàn bộ hình ảnh, video, bố cục & hiệu ứng gốc).`);
     } catch (e: any) {
       setGenMsg('Không nhập được tệp này (hỗ trợ .pptx, .pdf, .docx, ảnh và video).');
     }
@@ -1424,8 +1486,11 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
         (ins[i] || []).forEach(y => r2.push(y));
       });
 
-      setLesson(prev => ({ ...prev, slides: r2 }));
-      const okMsg = `AI đã tự động chèn thành công ${insertedCount} câu hỏi tương tác đa dạng vào bài giảng.`;
+      const nextLesson: Lesson = { ...lessonRef.current, slides: r2 };
+      setLesson(nextLesson);
+      lessonRef.current = nextLesson;
+      persistLessonNow(nextLesson, false).catch(() => {});
+      const okMsg = `AI đã tự động chèn thành công ${insertedCount} câu hỏi tương tác đa dạng và cập nhật vào Bảng điều khiển.`;
       setAutoInsertMsg(okMsg);
       setGenMsg(okMsg);
     } catch (e: any) {
@@ -2734,9 +2799,9 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
 
 
             <div className="space-y-4">
-              <h3 className="text-lg font-bold text-stone-700 dark:text-slate-300">Bài giảng của tôi</h3>
+              <h3 className="text-lg font-bold text-stone-700 dark:text-slate-300">Bài giảng của tôi ({mine.length})</h3>
               {mine.length === 0 ? (
-                <p className="text-stone-500 dark:text-slate-500 italic">Chưa có bài giảng nào được lưu trên trình duyệt.</p>
+                <p className="text-stone-500 dark:text-slate-500 italic">Chưa có bài giảng nào trong Bảng điều khiển. Hãy bấm "Bài giảng mới" hoặc "Tạo bằng AI" để bắt đầu.</p>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                   {mine.map((l, i) => {
@@ -2796,7 +2861,7 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                           <div className="text-xs font-semibold text-purple-600 dark:text-purple-400">
                             {lessonReps.length > 0
                               ? `${lessonReps.length} buổi đã lưu (${Array.from(new Set(lessonReps.map(r => r.className))).join(', ')}) · Tương tác TB: ${avgPct}%`
-                              : 'Đã lưu tự động · Chưa có buổi dạy'}
+                              : 'Đã lưu vào Bảng điều khiển · Chưa có buổi dạy'}
                           </div>
                         </div>
                         <div className="flex gap-2 mt-5">
@@ -2857,12 +2922,25 @@ Hãy đảm bảo phân bổ đều các loại câu hỏi (cloud, open, poll, q
                 <button onClick={startClassroom} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow transition flex items-center gap-2">
                   <Play className="w-4 h-4 fill-current" /> Bắt đầu lớp học
                 </button>
-                <button onClick={saveCurrentLesson} className="px-5 py-2.5 bg-stone-200 dark:bg-slate-800 hover:bg-stone-300 font-semibold rounded-xl transition flex items-center gap-2">
+                <button onClick={saveCurrentLesson} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow transition flex items-center gap-2">
                   <Save className="w-4 h-4" /> Lưu bài giảng
                 </button>
               </div>
             </div>
-            {saveMsg && <p className="text-sm font-medium text-emerald-600">{saveMsg}</p>}
+            {saveMsg && (
+              <div className="flex items-center justify-between gap-3 flex-wrap p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800">
+                <span className="text-sm font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4" /> {saveMsg}
+                </span>
+                <button
+                  type="button"
+                  onClick={loadDashboard}
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+                >
+                  <BookOpen className="w-3.5 h-3.5" /> Mở Bảng điều khiển
+                </button>
+              </div>
+            )}
 
             {/* AI Topic Generator */}
             <div className="bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-6 rounded-2xl shadow-sm space-y-3">

@@ -150,13 +150,139 @@ export function deserializeLessonWithMedia(jsonStr: string): any {
   };
 }
 
+let firestoreWritePaused = false;
+
+async function runFirestoreWrite<T>(fn: () => Promise<T>, timeoutMs = 2500): Promise<boolean> {
+  if (firestoreWritePaused) return false;
+  let timer: any = null;
+  try {
+    const timeoutPromise = new Promise<'TIMEOUT'>(resolve => {
+      timer = setTimeout(() => resolve('TIMEOUT'), timeoutMs);
+    });
+    const res = await Promise.race([fn(), timeoutPromise]);
+    if (res === 'TIMEOUT') {
+      firestoreWritePaused = true;
+      return false;
+    }
+    return true;
+  } catch {
+    firestoreWritePaused = true;
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function serverFetchAll(): Promise<{
+  lessons: any[];
+  reports: any[];
+  deletedLessonIds: Set<string>;
+  deletedReportIds: Set<string>;
+}> {
+  const ownerId = getActiveCloudOwnerId() || `sync_${DEFAULT_TEACHER_SYNC_KEY}`;
+  try {
+    const resp = await fetch(`/api/storage/all?ownerId=${encodeURIComponent(ownerId)}`);
+    if (!resp.ok) {
+      return { lessons: [], reports: [], deletedLessonIds: new Set(), deletedReportIds: new Set() };
+    }
+    const data = await resp.json();
+    const lessons: any[] = [];
+    if (Array.isArray(data?.lessons)) {
+      for (const item of data.lessons) {
+        if (item && typeof item.serialized === 'string') {
+          try {
+            const hydrated = deserializeLessonWithMedia(item.serialized);
+            hydrated.id = sanitizeId(item.id || hydrated.id);
+            lessons.push(hydrated);
+          } catch {
+            // skip invalid serialized lesson
+          }
+        }
+      }
+    }
+    const reports: any[] = Array.isArray(data?.reports) ? data.reports : [];
+    const deletedLessonIds = new Set<string>(
+      Array.isArray(data?.deletedLessonIds) ? data.deletedLessonIds.map((x: any) => sanitizeId(String(x))) : []
+    );
+    const deletedReportIds = new Set<string>(
+      Array.isArray(data?.deletedReportIds) ? data.deletedReportIds.map((x: any) => sanitizeId(String(x))) : []
+    );
+    return { lessons, reports, deletedLessonIds, deletedReportIds };
+  } catch {
+    return { lessons: [], reports: [], deletedLessonIds: new Set(), deletedReportIds: new Set() };
+  }
+}
+
+async function serverSaveLesson(lesson: any, rawId: string, fullJson: string): Promise<void> {
+  const ownerId = getActiveCloudOwnerId() || `sync_${DEFAULT_TEACHER_SYNC_KEY}`;
+  try {
+    await fetch('/api/storage/lesson', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ownerId,
+        id: rawId,
+        updatedAt: lesson.updatedAt || new Date().toISOString(),
+        serialized: fullJson,
+      }),
+    });
+  } catch {
+    // ignore network errors
+  }
+}
+
+async function serverDeleteLesson(rawId: string): Promise<void> {
+  const ownerId = getActiveCloudOwnerId() || `sync_${DEFAULT_TEACHER_SYNC_KEY}`;
+  try {
+    await fetch(`/api/storage/lesson/${encodeURIComponent(rawId)}?ownerId=${encodeURIComponent(ownerId)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // ignore
+  }
+}
+
+async function serverSaveReport(report: any, rawId: string): Promise<void> {
+  const ownerId = getActiveCloudOwnerId() || `sync_${DEFAULT_TEACHER_SYNC_KEY}`;
+  try {
+    await fetch('/api/storage/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ownerId,
+        report: { ...report, id: rawId },
+      }),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+async function serverDeleteReport(rawId: string): Promise<void> {
+  const ownerId = getActiveCloudOwnerId() || `sync_${DEFAULT_TEACHER_SYNC_KEY}`;
+  try {
+    await fetch(`/api/storage/report/${encodeURIComponent(rawId)}?ownerId=${encodeURIComponent(ownerId)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // ignore
+  }
+}
+
 export async function cloudSaveLesson(lesson: any): Promise<void> {
   const ownerId = getActiveCloudOwnerId();
   if (!ownerId) return;
 
   const rawId = sanitizeId(lesson.id || Math.random().toString(36).slice(2, 10));
-  const docId = sanitizeId(`${ownerId}_${rawId}`);
   const fullJson = await serializeLessonWithMedia({ ...lesson, id: rawId });
+
+  // 1. Immediately persist to backend system storage (fast, reliable, zero browser storage)
+  await serverSaveLesson(lesson, rawId, fullJson);
+
+  // 2. Non-blocking Firestore sync if quota is available
+  if (firestoreWritePaused) return;
+
+  const docId = sanitizeId(`${ownerId}_${rawId}`);
   const chunks: string[] = [];
   for (let i = 0; i < fullJson.length; i += CHUNK_MAX_CHARS) {
     chunks.push(fullJson.slice(i, i + CHUNK_MAX_CHARS));
@@ -166,11 +292,9 @@ export async function cloudSaveLesson(lesson: any): Promise<void> {
   }
   const safeChunks = chunks.slice(0, 200);
   const updatedAtMs = lesson.updatedAt ? Date.parse(lesson.updatedAt) || Date.now() : Date.now();
-
-  const lessonPath = `lessons/${docId}`;
   const lessonRef = doc(db, 'lessons', docId);
 
-  let existingSnap;
+  let existingSnap: any = null;
   try {
     existingSnap = await getDoc(lessonRef);
   } catch {
@@ -186,56 +310,50 @@ export async function cloudSaveLesson(lesson: any): Promise<void> {
     updatedAtMs: Math.max(0, Math.floor(updatedAtMs)),
   };
 
-  try {
-    if (existingSnap && existingSnap.exists()) {
-      await updateDoc(lessonRef, {
-        ...metaFields,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(lessonRef, {
-        id: docId,
-        ownerId,
-        ...metaFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, existingSnap?.exists() ? OperationType.UPDATE : OperationType.CREATE, lessonPath);
-  }
+  const metaOk = await runFirestoreWrite(() =>
+    existingSnap && existingSnap.exists()
+      ? updateDoc(lessonRef, {
+          ...metaFields,
+          updatedAt: serverTimestamp(),
+        })
+      : setDoc(lessonRef, {
+          id: docId,
+          ownerId,
+          ...metaFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+  );
+  if (!metaOk) return;
 
   for (let idx = 0; idx < safeChunks.length; idx++) {
+    if (firestoreWritePaused) return;
     const chunkId = `chunk_${idx}`;
-    const chunkPath = `lessons/${docId}/chunks/${chunkId}`;
     const chunkRef = doc(db, 'lessons', docId, 'chunks', chunkId);
-    let existingChunk;
+    let existingChunk: any = null;
     try {
       existingChunk = await getDoc(chunkRef);
     } catch {
       existingChunk = null;
     }
 
-    try {
-      if (existingChunk && existingChunk.exists()) {
-        await updateDoc(chunkRef, {
-          idx,
-          data: safeChunks[idx],
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        await setDoc(chunkRef, {
-          ownerId,
-          lessonId: docId,
-          idx,
-          data: safeChunks[idx],
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, existingChunk?.exists() ? OperationType.UPDATE : OperationType.CREATE, chunkPath);
-    }
+    const chunkOk = await runFirestoreWrite(() =>
+      existingChunk && existingChunk.exists()
+        ? updateDoc(chunkRef, {
+            idx,
+            data: safeChunks[idx],
+            updatedAt: serverTimestamp(),
+          })
+        : setDoc(chunkRef, {
+            ownerId,
+            lessonId: docId,
+            idx,
+            data: safeChunks[idx],
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          })
+    );
+    if (!chunkOk) return;
   }
 }
 
@@ -243,17 +361,23 @@ export async function cloudDeleteLesson(rawLessonId: string): Promise<void> {
   const ownerId = getActiveCloudOwnerId();
   if (!ownerId) return;
   const rawId = sanitizeId(rawLessonId);
+
+  await serverDeleteLesson(rawId);
+
+  if (firestoreWritePaused) return;
   const docIdsToTry = [sanitizeId(`${ownerId}_${rawId}`), rawId];
 
   for (const docId of docIdsToTry) {
+    if (firestoreWritePaused) break;
     const chunksCol = collection(db, 'lessons', docId, 'chunks');
     try {
       const q = query(chunksCol, where('ownerId', '==', ownerId));
       const snap = await getDocs(q);
       for (const d of snap.docs) {
-        await deleteDoc(d.ref);
+        const ok = await runFirestoreWrite(() => deleteDoc(d.ref));
+        if (!ok) break;
       }
-      await deleteDoc(doc(db, 'lessons', docId));
+      await runFirestoreWrite(() => deleteDoc(doc(db, 'lessons', docId)));
     } catch {
       // ignore if doc does not exist
     }
@@ -265,6 +389,10 @@ export async function cloudSaveReport(report: any): Promise<void> {
   if (!ownerId || !report?.id) return;
 
   const rawId = sanitizeId(report.id);
+  await serverSaveReport(report, rawId);
+
+  if (firestoreWritePaused) return;
+
   const docId = sanitizeId(`${ownerId}_${rawId}`);
   let payloadJson = JSON.stringify(report);
   if (payloadJson.length > REPORT_MAX_CHARS) {
@@ -290,10 +418,9 @@ export async function cloudSaveReport(report: any): Promise<void> {
   }
 
   const updatedAtMs = report.updatedAt ? Date.parse(report.updatedAt) || Date.now() : Date.now();
-  const reportPath = `reports/${docId}`;
   const reportRef = doc(db, 'reports', docId);
 
-  let existingSnap;
+  let existingSnap: any = null;
   try {
     existingSnap = await getDoc(reportRef);
   } catch {
@@ -308,173 +435,83 @@ export async function cloudSaveReport(report: any): Promise<void> {
     payloadJson,
   };
 
-  try {
-    if (existingSnap && existingSnap.exists()) {
-      await updateDoc(reportRef, {
-        ...fields,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(reportRef, {
-        id: docId,
-        ownerId,
-        ...fields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, existingSnap?.exists() ? OperationType.UPDATE : OperationType.CREATE, reportPath);
-  }
+  await runFirestoreWrite(() =>
+    existingSnap && existingSnap.exists()
+      ? updateDoc(reportRef, {
+          ...fields,
+          updatedAt: serverTimestamp(),
+        })
+      : setDoc(reportRef, {
+          id: docId,
+          ownerId,
+          ...fields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+  );
 }
 
 export async function cloudDeleteReport(rawReportId: string): Promise<void> {
   const ownerId = getActiveCloudOwnerId();
   if (!ownerId) return;
   const rawId = sanitizeId(rawReportId);
+
+  await serverDeleteReport(rawId);
+
+  if (firestoreWritePaused) return;
   const docIdsToTry = [sanitizeId(`${ownerId}_${rawId}`), rawId];
   for (const docId of docIdsToTry) {
-    try {
-      await deleteDoc(doc(db, 'reports', docId));
-    } catch {
-      // ignore
-    }
+    if (firestoreWritePaused) break;
+    await runFirestoreWrite(() => deleteDoc(doc(db, 'reports', docId)));
   }
 }
 
 export async function cloudSyncAll(
   localLessons: any[],
   localReports: any[],
-  saveLocalLesson: (l: any) => Promise<void>,
-  saveLocalReport: (r: any) => Promise<void>
+  _saveLocalLesson?: (l: any) => Promise<void>,
+  _saveLocalReport?: (r: any) => Promise<void>
 ): Promise<{ lessons: any[]; reports: any[] }> {
-  const ownerId = getActiveCloudOwnerId();
-  if (!ownerId) {
-    return { lessons: localLessons, reports: localReports };
-  }
+  const [fetchedLessons, fetchedReports] = await Promise.all([
+    cloudFetchAllLessons(),
+    cloudFetchAllReports(),
+  ]);
 
-  const stripPrefix = (docId: string) => {
-    const prefix = `${ownerId}_`;
-    return docId.startsWith(prefix) ? docId.slice(prefix.length) : docId;
-  };
-
-  // 1. Fetch remote lessons metadata
   const lessonsMap = new Map<string, any>();
-  for (const l of localLessons) {
+  for (const l of localLessons || []) {
     if (l?.id) {
-      const cleanLocalId = sanitizeId(l.id);
-      lessonsMap.set(cleanLocalId, { ...l, id: cleanLocalId });
+      const cid = sanitizeId(l.id);
+      lessonsMap.set(cid, { ...l, id: cid });
     }
   }
-
-  let remoteLessonDocs: any[] = [];
-  try {
-    const qLessons = query(collection(db, 'lessons'), where('ownerId', '==', ownerId));
-    const snap = await getDocs(qLessons);
-    remoteLessonDocs = snap.docs.map(d => d.data());
-  } catch (error) {
-    // Fail gracefully without throwing errors to keep operations lightning fast
-    remoteLessonDocs = [];
-  }
-
-  const remoteLessonIds = new Set<string>();
-  for (const meta of remoteLessonDocs) {
-    const docId = meta.id;
-    const lid = stripPrefix(docId);
-    remoteLessonIds.add(lid);
-    const local = lessonsMap.get(lid);
-    const localMs = local?.updatedAt ? Date.parse(local.updatedAt) || 0 : 0;
-    const remoteMs = typeof meta.updatedAtMs === 'number' ? meta.updatedAtMs : 0;
-
-    if (!local || remoteMs > localMs + 1000) {
-      try {
-        const qChunks = query(
-          collection(db, 'lessons', docId, 'chunks'),
-          where('ownerId', '==', ownerId)
-        );
-        const chunkSnap = await getDocs(qChunks);
-        const sortedChunks = chunkSnap.docs
-          .map(d => d.data())
-          .sort((a, b) => (a.idx || 0) - (b.idx || 0));
-        const expectedCount = typeof meta.chunkCount === 'number' ? meta.chunkCount : sortedChunks.length;
-        const joined = sortedChunks
-          .slice(0, expectedCount)
-          .map(c => c.data || '')
-          .join('');
-        if (joined) {
-          const hydrated = deserializeLessonWithMedia(joined);
-          hydrated.id = lid;
-          lessonsMap.set(lid, hydrated);
-          await saveLocalLesson(hydrated);
-        }
-      } catch {
-        // keep local if chunk assembly fails
+  for (const rl of fetchedLessons || []) {
+    if (rl?.id) {
+      const cid = sanitizeId(rl.id);
+      const existing = lessonsMap.get(cid);
+      const existingMs = existing?.updatedAt ? Date.parse(existing.updatedAt) || 0 : 0;
+      const remoteMs = rl?.updatedAt ? Date.parse(rl.updatedAt) || 0 : 0;
+      if (!existing || remoteMs >= existingMs) {
+        lessonsMap.set(cid, { ...rl, id: cid });
       }
-    } else if (local && localMs > remoteMs + 1000) {
-      try {
-        await cloudSaveLesson(local);
-      } catch {}
     }
   }
 
-  for (const [lid, local] of lessonsMap.entries()) {
-    if (!remoteLessonIds.has(lid)) {
-      try {
-        await cloudSaveLesson(local);
-      } catch {}
-    }
-  }
-
-  // 2. Fetch remote session reports
   const reportsMap = new Map<string, any>();
-  for (const r of localReports) {
+  for (const r of localReports || []) {
     if (r?.id) {
-      const cleanId = sanitizeId(r.id);
-      reportsMap.set(cleanId, { ...r, id: cleanId });
+      const cid = sanitizeId(r.id);
+      reportsMap.set(cid, { ...r, id: cid });
     }
   }
-
-  let remoteReportDocs: any[] = [];
-  try {
-    const qReports = query(collection(db, 'reports'), where('ownerId', '==', ownerId));
-    const snap = await getDocs(qReports);
-    remoteReportDocs = snap.docs.map(d => d.data());
-  } catch (error) {
-    remoteReportDocs = [];
-  }
-
-  const remoteReportIds = new Set<string>();
-  for (const rdoc of remoteReportDocs) {
-    const docId = rdoc.id;
-    const rid = stripPrefix(docId);
-    remoteReportIds.add(rid);
-    const local = reportsMap.get(rid);
-    const localMs = local?.updatedAt ? Date.parse(local.updatedAt) || 0 : 0;
-    const remoteMs = typeof rdoc.updatedAtMs === 'number' ? rdoc.updatedAtMs : 0;
-
-    if (!local || remoteMs > localMs + 1000) {
-      try {
-        const parsed = JSON.parse(rdoc.payloadJson);
-        if (parsed && parsed.id) {
-          parsed.id = rid;
-          reportsMap.set(rid, parsed);
-          await saveLocalReport(parsed);
-        }
-      } catch {
-        // skip invalid JSON
+  for (const rr of fetchedReports || []) {
+    if (rr?.id) {
+      const cid = sanitizeId(rr.id);
+      const existing = reportsMap.get(cid);
+      const existingMs = existing?.updatedAt ? Date.parse(existing.updatedAt) || 0 : 0;
+      const remoteMs = rr?.updatedAt ? Date.parse(rr.updatedAt) || 0 : 0;
+      if (!existing || remoteMs >= existingMs) {
+        reportsMap.set(cid, { ...rr, id: cid });
       }
-    } else if (local && localMs > remoteMs + 1000) {
-      try {
-        await cloudSaveReport(local);
-      } catch {}
-    }
-  }
-
-  for (const [rid, local] of reportsMap.entries()) {
-    if (!remoteReportIds.has(rid)) {
-      try {
-        await cloudSaveReport(local);
-      } catch {}
     }
   }
 
@@ -532,14 +569,30 @@ export async function cloudFetchAllLessons(): Promise<any[]> {
     const prefix = `${ownerId}_`;
     return docId.startsWith(prefix) ? docId.slice(prefix.length) : docId;
   };
+
+  const serverData = await serverFetchAll();
+  const byId = new Map<string, any>();
+  for (const sl of serverData.lessons) {
+    if (sl?.id && !serverData.deletedLessonIds.has(sanitizeId(sl.id))) {
+      const cid = sanitizeId(sl.id);
+      byId.set(cid, { ...sl, id: cid });
+    }
+  }
+
   try {
     const qLessons = query(collection(db, 'lessons'), where('ownerId', '==', ownerId));
     const snap = await getDocs(qLessons);
-    const remoteLessons: any[] = [];
     for (const dSnap of snap.docs) {
       const meta = dSnap.data();
       const docId = meta.id;
-      const lid = stripPrefix(docId);
+      const lid = sanitizeId(stripPrefix(docId));
+      if (serverData.deletedLessonIds.has(lid)) continue;
+
+      const existing = byId.get(lid);
+      const existingMs = existing?.updatedAt ? Date.parse(existing.updatedAt) || 0 : 0;
+      const remoteMs = typeof meta.updatedAtMs === 'number' ? meta.updatedAtMs : 0;
+      if (existing && existingMs >= remoteMs) continue;
+
       try {
         const qChunks = query(collection(db, 'lessons', docId, 'chunks'), where('ownerId', '==', ownerId));
         const chunkSnap = await getDocs(qChunks);
@@ -551,14 +604,16 @@ export async function cloudFetchAllLessons(): Promise<any[]> {
         if (joined) {
           const hydrated = deserializeLessonWithMedia(joined);
           hydrated.id = lid;
-          remoteLessons.push(hydrated);
+          byId.set(lid, hydrated);
+          serverSaveLesson(hydrated, lid, joined).catch(() => {});
         }
       } catch {}
     }
-    return remoteLessons.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   } catch {
-    return [];
+    // ignore Firestore read error
   }
+
+  return Array.from(byId.values()).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
 
 export async function cloudFetchAllReports(): Promise<any[]> {
@@ -568,25 +623,43 @@ export async function cloudFetchAllReports(): Promise<any[]> {
     const prefix = `${ownerId}_`;
     return docId.startsWith(prefix) ? docId.slice(prefix.length) : docId;
   };
+
+  const serverData = await serverFetchAll();
+  const byId = new Map<string, any>();
+  for (const sr of serverData.reports) {
+    if (sr?.id && !serverData.deletedReportIds.has(sanitizeId(sr.id))) {
+      const cid = sanitizeId(sr.id);
+      byId.set(cid, { ...sr, id: cid });
+    }
+  }
+
   try {
     const qReports = query(collection(db, 'reports'), where('ownerId', '==', ownerId));
     const snap = await getDocs(qReports);
-    const reports: any[] = [];
     for (const rdoc of snap.docs) {
       const data = rdoc.data();
-      const rid = stripPrefix(data.id);
+      const rid = sanitizeId(stripPrefix(data.id));
+      if (serverData.deletedReportIds.has(rid)) continue;
+
+      const existing = byId.get(rid);
+      const existingMs = existing?.updatedAt ? Date.parse(existing.updatedAt) || 0 : 0;
+      const remoteMs = typeof data.updatedAtMs === 'number' ? data.updatedAtMs : 0;
+      if (existing && existingMs >= remoteMs) continue;
+
       try {
         const parsed = JSON.parse(data.payloadJson);
         if (parsed && parsed.id) {
           parsed.id = rid;
-          reports.push(parsed);
+          byId.set(rid, parsed);
+          serverSaveReport(parsed, rid).catch(() => {});
         }
       } catch {}
     }
-    return reports.sort((a, b) => (b.updatedAt || b.id).localeCompare(a.updatedAt || a.id));
   } catch {
-    return [];
+    // ignore Firestore read error
   }
+
+  return Array.from(byId.values()).sort((a, b) => (b.updatedAt || b.id).localeCompare(a.updatedAt || a.id));
 }
 
 export {

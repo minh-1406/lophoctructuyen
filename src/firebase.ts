@@ -9,6 +9,7 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  setLogLevel,
   doc,
   getDoc,
   getDocFromServer,
@@ -22,6 +23,12 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
+
+try {
+  setLogLevel('silent');
+} catch {
+  // ignore
+}
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
