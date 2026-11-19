@@ -784,7 +784,7 @@ export default function App() {
         const currentHost = window.location.hostname;
         setUnauthorizedDomainHost(currentHost);
         setCloudSyncMsg(
-          `Tên miền "${currentHost}" chưa được cấp quyền trong Firebase Console (Authentication -> Settings -> Authorized domains). Hãy thêm "${currentHost}" vào danh sách tên miền được phép để đăng nhập Google trực tiếp trên Vercel.`
+          `Tên miền "${currentHost}" chưa nằm trong danh sách Authorized domains của dự án Firebase mặc định. Hãy thêm "${currentHost}" trong Firebase Console (nếu dùng dự án Firebase riêng của bạn), hoặc dùng trực tiếp Mã đồng bộ "quangminh1485" ở ô bên trên để đồng bộ dữ liệu ngay giữa AI Studio và Vercel.`
         );
       } else if (code === 'auth/popup-blocked') {
         setCloudSyncMsg('Trình duyệt đang chặn cửa sổ bật lên (Popup). Vui lòng bấm "Cho phép pop-up" trên thanh địa chỉ trình duyệt rồi thử lại.');
