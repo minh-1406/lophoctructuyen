@@ -229,6 +229,7 @@ export default function App() {
   const [showCloudModal, setShowCloudModal] = useState(false);
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = useState('');
+  const [unauthorizedDomainHost, setUnauthorizedDomainHost] = useState<string | null>(null);
   const [revealedSlides, setRevealedSlides] = useState<Record<number, boolean>>({});
   const [votingActive, setVotingActive] = useState<Record<number, boolean>>({});
   const [studentVotes, setStudentVotes] = useState<Record<number, Record<string, string>>>({});
@@ -689,6 +690,7 @@ export default function App() {
     getRedirectResult(auth)
       .then(cred => {
         if (cred?.user) {
+          setUnauthorizedDomainHost(null);
           setCloudUser(cred.user);
           if (cred.user.email) {
             const norm = setSavedSyncKey(cred.user.email);
@@ -698,7 +700,14 @@ export default function App() {
           syncWithCloudNow(true);
         }
       })
-      .catch(() => {});
+      .catch(err => {
+        const code = String(err?.code || '');
+        if (code === 'auth/unauthorized-domain') {
+          const host = window.location.hostname;
+          setUnauthorizedDomainHost(host);
+          setCloudSyncMsg(`Tên miền "${host}" cần được thêm vào Authorized domains trong Firebase Console.`);
+        }
+      });
 
     const unsub = onAuthStateChanged(auth, u => {
       setCloudUser(u);
@@ -737,6 +746,7 @@ export default function App() {
   const handleCloudLogin = async () => {
     // Call signInWithPopup immediately on click before React state updates so browsers do not block the popup
     const popupPromise = signInWithPopup(auth, googleProvider);
+    setUnauthorizedDomainHost(null);
     setCloudSyncing(true);
     setCloudSyncMsg('Đang mở cửa sổ đăng nhập Google...');
     try {
@@ -772,6 +782,7 @@ export default function App() {
 
       if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
         const currentHost = window.location.hostname;
+        setUnauthorizedDomainHost(currentHost);
         setCloudSyncMsg(
           `Tên miền "${currentHost}" chưa được cấp quyền trong Firebase Console (Authentication -> Settings -> Authorized domains). Hãy thêm "${currentHost}" vào danh sách tên miền được phép để đăng nhập Google trực tiếp trên Vercel.`
         );
@@ -4980,6 +4991,37 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
 
               {cloudSyncMsg && (
                 <p className="text-xs font-semibold text-purple-600 dark:text-purple-400">{cloudSyncMsg}</p>
+              )}
+
+              {unauthorizedDomainHost && (
+                <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 space-y-2 text-xs">
+                  <div className="font-bold text-amber-800 dark:text-amber-200">
+                    Hướng dẫn cấp quyền tên miền trên Firebase Console (chỉ làm 1 lần):
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <code className="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 font-mono font-bold text-amber-900 dark:text-amber-100">
+                      {unauthorizedDomainHost}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(unauthorizedDomainHost);
+                        setCloudSyncMsg(`Đã sao chép "${unauthorizedDomainHost}". Dán vào mục Authorized domains trong Firebase Console.`);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-amber-600 text-white font-bold hover:bg-amber-700 transition"
+                    >
+                      Sao chép tên miền
+                    </button>
+                    <a
+                      href="https://console.firebase.google.com/project/micro-banner-55xj8/authentication/settings"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1 rounded-lg bg-purple-600 text-white font-bold hover:bg-purple-700 transition"
+                    >
+                      Mở Firebase Console ↗
+                    </a>
+                  </div>
+                </div>
               )}
 
               <div className="space-y-2 pt-2 border-t border-stone-200 dark:border-slate-800">
