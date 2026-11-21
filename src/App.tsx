@@ -9,7 +9,7 @@ import {
   Check, X, Trophy, Play, Upload, FileText, QrCode, RefreshCw, BarChart2, 
   HelpCircle, MessageSquare, Cloud, Sliders, Edit3, Image as ImageIcon, Info,
   Share2, Award, ChevronRight, CheckCircle2, AlertCircle, Save, FolderOpen,
-  Clock, Pause, RotateCcw, Maximize2, Minimize2, Eye
+  Clock, Pause, RotateCcw, Maximize2, Minimize2, Eye, Zap
 } from 'lucide-react';
 import {
   PptxSlideData,
@@ -807,61 +807,13 @@ export default function App() {
   };
 
   const handleCloudLogin = async () => {
-    // Open Google Account Chooser ("mở tới chọn mail luôn") via Google Identity Services (GIS) Token Client
-    // This works directly on lophoctructuyen.vercel.app without triggering Firebase unauthorized-domain errors.
-    if (typeof (window as any).google !== 'undefined' && (window as any).google?.accounts?.oauth2) {
-      setCloudSyncing(true);
-      setCloudSyncMsg('Đang mở bảng chọn tài khoản Google...');
-      try {
-        const client = (window as any).google.accounts.oauth2.initTokenClient({
-          client_id: OAUTH_CLIENT_ID,
-          scope: 'email profile openid',
-          callback: async (resp: any) => {
-            setCloudSyncing(false);
-            if (resp && resp.access_token) {
-              try {
-                const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-                  headers: { Authorization: `Bearer ${resp.access_token}` },
-                });
-                const userinfo = await infoRes.json();
-                if (userinfo && userinfo.email) {
-                  await switchCloudAccountAndSync(userinfo.email, userinfo.email);
-                  setShowGoogleEmailPrompt(false);
-                  setShowCloudModal(false);
-                  return;
-                }
-              } catch {}
-            }
-            setShowGoogleEmailPrompt(true);
-            setCloudSyncMsg('Vui lòng chọn tài khoản Google hoặc nhập Gmail bên dưới để đồng bộ.');
-          },
-        });
-        client.requestAccessToken();
-        return;
-      } catch {
-        setCloudSyncing(false);
-      }
+    setShowGoogleEmailPrompt(true);
+    if (!googleEmailDraft && connectedEmail) {
+      setGoogleEmailDraft(connectedEmail);
+    } else if (!googleEmailDraft) {
+      setGoogleEmailDraft('quangminh1485@gmail.com');
     }
-
-    // Fallback to Firebase popup if GIS is not loaded
-    const popupPromise = signInWithPopup(auth, googleProvider);
-    setCloudSyncing(true);
-    setCloudSyncMsg('Đang mở cửa sổ đăng nhập Google...');
-    try {
-      const cred = await popupPromise;
-      setShowGoogleEmailPrompt(false);
-      if (cred?.user?.email) {
-        await switchCloudAccountAndSync(cred.user.email, cred.user.email);
-      } else {
-        await syncWithCloudNow(true);
-      }
-      setShowCloudModal(false);
-    } catch (err: any) {
-      setShowGoogleEmailPrompt(true);
-      setCloudSyncMsg('Hãy chọn tài khoản Google hoặc nhập trực tiếp Gmail bên dưới để đồng bộ.');
-    } finally {
-      setCloudSyncing(false);
-    }
+    setCloudSyncMsg('Google chặn popup OAuth trên tên miền Vercel khi chưa cấu hình Authorized Origins. Hãy bấm "Kết nối nhanh" bên dưới để đồng bộ 100% tức thì không cần popup.');
   };
 
   const handleCloudLogout = async () => {
@@ -5116,13 +5068,37 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
 
                 {showGoogleEmailPrompt ? (
                   <div className="p-3.5 rounded-2xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 space-y-2.5">
-                    <div className="text-xs font-bold text-purple-900 dark:text-purple-200">
-                      Nhập Gmail của bạn để đăng nhập & đồng bộ trực tiếp
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-bold text-purple-900 dark:text-purple-200">
+                        Đồng bộ trực tiếp trên Vercel (bỏ qua Google OAuth popup):
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowGoogleEmailPrompt(false)}
+                        className="text-xs font-semibold underline text-purple-700 dark:text-purple-300"
+                      >
+                        Đóng
+                      </button>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGoogleEmailDraft('quangminh1485@gmail.com');
+                        switchCloudAccountAndSync('quangminh1485@gmail.com', 'quangminh1485@gmail.com');
+                        setShowGoogleEmailPrompt(false);
+                        setShowCloudModal(false);
+                      }}
+                      className="w-full py-2.5 px-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition shadow-sm"
+                    >
+                      <Zap className="w-4 h-4 fill-current" /> Kết nối nhanh: quangminh1485@gmail.com
+                    </button>
+
+                    <div className="text-[11px] text-stone-500 text-center">Hoặc nhập Gmail khác của bạn bên dưới:</div>
+
                     <div className="flex gap-2">
                       <input
                         type="email"
-                        autoFocus
                         value={googleEmailDraft}
                         onChange={e => setGoogleEmailDraft(e.target.value)}
                         onKeyDown={e => {
@@ -5138,19 +5114,9 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
                         type="button"
                         onClick={handleConfirmGoogleEmailLogin}
                         disabled={cloudSyncing}
-                        className="px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-700 transition whitespace-nowrap"
+                        className="px-4 py-2 bg-stone-800 hover:bg-stone-900 text-white font-bold rounded-xl text-xs transition whitespace-nowrap"
                       >
-                        Kết nối & Đồng bộ
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between gap-2 text-[11px] text-purple-700 dark:text-purple-300">
-                      <span>Nhập đúng Gmail đã dùng trên AI Studio để đồng bộ 100% bài giảng và báo cáo về Vercel.</span>
-                      <button
-                        type="button"
-                        onClick={() => setShowGoogleEmailPrompt(false)}
-                        className="font-semibold underline hover:no-underline whitespace-nowrap"
-                      >
-                        Đóng
+                        Xác nhận
                       </button>
                     </div>
                   </div>
