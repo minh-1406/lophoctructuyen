@@ -21,6 +21,9 @@ import {
   OperationType,
   type User,
 } from './firebase';
+import firebaseConfig from './firebase-applet-config.json';
+
+export const OAUTH_CLIENT_ID = firebaseConfig.oAuthClientId;
 
 const CHUNK_MAX_CHARS = 600000; // Strictly <= 750000 in firebase-blueprint.json & firestore.rules
 const REPORT_MAX_CHARS = 800000; // Strictly <= 850000 in firebase-blueprint.json & firestore.rules

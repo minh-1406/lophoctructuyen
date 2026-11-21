@@ -42,6 +42,7 @@ import {
   getActiveCloudLabel,
   exportBackupJson,
   importBackupJson,
+  OAUTH_CLIENT_ID,
   type User,
 } from './cloudSync';
 
@@ -806,7 +807,43 @@ export default function App() {
   };
 
   const handleCloudLogin = async () => {
-    // Call signInWithPopup immediately on click before React state updates so browsers do not block the popup
+    // Open Google Account Chooser ("mở tới chọn mail luôn") via Google Identity Services (GIS) Token Client
+    // This works directly on lophoctructuyen.vercel.app without triggering Firebase unauthorized-domain errors.
+    if (typeof (window as any).google !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+      setCloudSyncing(true);
+      setCloudSyncMsg('Đang mở bảng chọn tài khoản Google...');
+      try {
+        const client = (window as any).google.accounts.oauth2.initTokenClient({
+          client_id: OAUTH_CLIENT_ID,
+          scope: 'email profile openid',
+          callback: async (resp: any) => {
+            setCloudSyncing(false);
+            if (resp && resp.access_token) {
+              try {
+                const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                  headers: { Authorization: `Bearer ${resp.access_token}` },
+                });
+                const userinfo = await infoRes.json();
+                if (userinfo && userinfo.email) {
+                  await switchCloudAccountAndSync(userinfo.email, userinfo.email);
+                  setShowGoogleEmailPrompt(false);
+                  setShowCloudModal(false);
+                  return;
+                }
+              } catch {}
+            }
+            setShowGoogleEmailPrompt(true);
+            setCloudSyncMsg('Vui lòng chọn tài khoản Google hoặc nhập Gmail bên dưới để đồng bộ.');
+          },
+        });
+        client.requestAccessToken();
+        return;
+      } catch {
+        setCloudSyncing(false);
+      }
+    }
+
+    // Fallback to Firebase popup if GIS is not loaded
     const popupPromise = signInWithPopup(auth, googleProvider);
     setCloudSyncing(true);
     setCloudSyncMsg('Đang mở cửa sổ đăng nhập Google...');
@@ -820,29 +857,8 @@ export default function App() {
       }
       setShowCloudModal(false);
     } catch (err: any) {
-      const code = String(err?.code || '');
-      const msg = String(err?.message || '');
-
-      if (
-        code === 'auth/unauthorized-domain' ||
-        msg.includes('unauthorized-domain') ||
-        code === 'auth/popup-blocked' ||
-        code === 'auth/operation-not-supported-in-this-environment'
-      ) {
-        setShowGoogleEmailPrompt(true);
-        if (!googleEmailDraft && connectedEmail) {
-          setGoogleEmailDraft(connectedEmail);
-        }
-        setCloudSyncMsg(
-          'Tên miền này không hỗ trợ popup Google trực tiếp. Hãy nhập địa chỉ Gmail của bạn vào ô bên dưới để kết nối & đồng bộ ngay!'
-        );
-      } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setShowGoogleEmailPrompt(true);
-        setCloudSyncMsg('Bạn đã đóng cửa sổ Google. Bạn có thể bấm thử lại hoặc nhập trực tiếp Gmail bên dưới để đồng bộ.');
-      } else {
-        setShowGoogleEmailPrompt(true);
-        setCloudSyncMsg('Không mở được popup Google (' + (code || 'lỗi kết nối') + '). Bạn hãy nhập trực tiếp Gmail bên dưới để đồng bộ.');
-      }
+      setShowGoogleEmailPrompt(true);
+      setCloudSyncMsg('Hãy chọn tài khoản Google hoặc nhập trực tiếp Gmail bên dưới để đồng bộ.');
     } finally {
       setCloudSyncing(false);
     }
