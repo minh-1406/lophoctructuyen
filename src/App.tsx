@@ -35,6 +35,9 @@ import {
   cloudSyncAll,
   getSavedSyncKey,
   setSavedSyncKey,
+  getSavedCloudEmail,
+  setSavedCloudEmail,
+  normalizeSyncKey,
   getActiveCloudOwnerId,
   getActiveCloudLabel,
   exportBackupJson,
@@ -224,12 +227,14 @@ export default function App() {
   const [statsClassFilter, setStatsClassFilter] = useState<string>('ALL');
   const [expandedActivitySlides, setExpandedActivitySlides] = useState<Record<string, boolean>>({});
   const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [connectedEmail, setConnectedEmail] = useState<string>(() => getSavedCloudEmail());
   const [cloudSyncKey, setCloudSyncKey] = useState<string>(() => getSavedSyncKey());
   const [cloudKeyInput, setCloudKeyInput] = useState<string>(() => getSavedSyncKey());
   const [showCloudModal, setShowCloudModal] = useState(false);
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = useState('');
-  const [unauthorizedDomainHost, setUnauthorizedDomainHost] = useState<string | null>(null);
+  const [showGoogleEmailPrompt, setShowGoogleEmailPrompt] = useState(false);
+  const [googleEmailDraft, setGoogleEmailDraft] = useState<string>(() => getSavedCloudEmail());
   const [revealedSlides, setRevealedSlides] = useState<Record<number, boolean>>({});
   const [votingActive, setVotingActive] = useState<Record<number, boolean>>({});
   const [studentVotes, setStudentVotes] = useState<Record<number, Record<string, string>>>({});
@@ -686,35 +691,79 @@ export default function App() {
     }
   };
 
+  const switchCloudAccountAndSync = async (rawKeyOrEmail: string, emailToSave?: string) => {
+    const prevOwnerId = getActiveCloudOwnerId();
+    const norm = setSavedSyncKey(rawKeyOrEmail);
+    setCloudSyncKey(norm);
+    setCloudKeyInput(norm);
+    if (emailToSave !== undefined) {
+      const savedMail = setSavedCloudEmail(emailToSave);
+      setConnectedEmail(savedMail);
+      if (savedMail) setGoogleEmailDraft(savedMail);
+    }
+    const nextOwnerId = getActiveCloudOwnerId();
+
+    if (prevOwnerId !== nextOwnerId) {
+      deletedLessonIdsRef.current.clear();
+      deletedReportIdsRef.current.clear();
+      setCloudSyncing(true);
+      setCloudSyncMsg('Đang tải dữ liệu bài giảng & thống kê cho tài khoản mới...');
+      try {
+        const [fetchedLessons, fetchedReps] = await Promise.all([
+          cloudFetchAllLessons(),
+          cloudFetchAllReports(),
+        ]);
+        const freshLessons = mergeLessonsList([], fetchedLessons || []);
+        const freshReps = mergeReportsList([], fetchedReps || []);
+        mineRef.current = freshLessons;
+        setMine(freshLessons);
+        sessionReportsRef.current = freshReps;
+        setSessionReports(freshReps);
+        setCloudSyncMsg(
+          `Đã kết nối${emailToSave ? ` (${emailToSave})` : ''} và đồng bộ (${freshLessons.length} bài giảng, ${freshReps.length} thống kê).`
+        );
+      } catch {
+        setCloudSyncMsg('Đã cập nhật tài khoản đồng bộ.');
+      } finally {
+        setCloudSyncing(false);
+      }
+    } else {
+      await syncWithCloudNow(true);
+    }
+  };
+
   useEffect(() => {
     getRedirectResult(auth)
       .then(cred => {
         if (cred?.user) {
-          setUnauthorizedDomainHost(null);
+          setShowGoogleEmailPrompt(false);
           setCloudUser(cred.user);
           if (cred.user.email) {
-            const norm = setSavedSyncKey(cred.user.email);
-            setCloudSyncKey(norm);
-            setCloudKeyInput(norm);
+            switchCloudAccountAndSync(cred.user.email, cred.user.email);
+          } else {
+            syncWithCloudNow(true);
           }
-          syncWithCloudNow(true);
         }
       })
       .catch(err => {
         const code = String(err?.code || '');
-        if (code === 'auth/unauthorized-domain') {
-          const host = window.location.hostname;
-          setUnauthorizedDomainHost(host);
-          setCloudSyncMsg(`Tên miền "${host}" cần được thêm vào Authorized domains trong Firebase Console.`);
+        if (code === 'auth/unauthorized-domain' || code === 'auth/popup-blocked') {
+          setShowGoogleEmailPrompt(true);
+          setShowCloudModal(true);
+          setCloudSyncMsg('Tên miền hiện tại chưa hỗ trợ cửa sổ Google tự động. Hãy nhập trực tiếp Gmail của bạn ngay bên dưới để đồng bộ.');
         }
       });
 
     const unsub = onAuthStateChanged(auth, u => {
       setCloudUser(u);
-      if (u && u.email && !getSavedSyncKey()) {
-        const norm = setSavedSyncKey(u.email);
-        setCloudSyncKey(norm);
-        setCloudKeyInput(norm);
+      if (u && u.email) {
+        const savedMail = setSavedCloudEmail(u.email);
+        setConnectedEmail(savedMail);
+        if (!getSavedSyncKey()) {
+          const norm = setSavedSyncKey(u.email);
+          setCloudSyncKey(norm);
+          setCloudKeyInput(norm);
+        }
       }
       if (u || getSavedSyncKey()) {
         syncWithCloudNow(true);
@@ -727,14 +776,14 @@ export default function App() {
   }, []);
 
   const handleSaveCloudKeyAndSync = async () => {
-    const norm = setSavedSyncKey(cloudKeyInput);
+    const norm = normalizeSyncKey(cloudKeyInput);
     if (!norm) {
       setCloudSyncMsg('Vui lòng nhập Mã đồng bộ hoặc Email (tối thiểu 3 ký tự chữ/số, ví dụ: quangminh1485).');
       return;
     }
-    setCloudSyncKey(norm);
-    setCloudKeyInput(norm);
-    await syncWithCloudNow(true);
+    const emailCandidate = cloudKeyInput.includes('@') ? cloudKeyInput.trim().toLowerCase() : (norm === normalizeSyncKey(connectedEmail) ? connectedEmail : '');
+    await switchCloudAccountAndSync(cloudKeyInput, emailCandidate);
+    setShowGoogleEmailPrompt(false);
     setShowCloudModal(false);
   };
 
@@ -743,55 +792,56 @@ export default function App() {
     syncWithCloudNow(false);
   };
 
+  const handleConfirmGoogleEmailLogin = async () => {
+    const trimmed = googleEmailDraft.trim().toLowerCase();
+    const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+    const norm = normalizeSyncKey(trimmed);
+    if (!isValidEmail || !norm) {
+      setCloudSyncMsg('Vui lòng nhập đúng địa chỉ Gmail / Email (ví dụ: quangminh1485@gmail.com).');
+      return;
+    }
+    await switchCloudAccountAndSync(trimmed, trimmed);
+    setShowGoogleEmailPrompt(false);
+    setShowCloudModal(false);
+  };
+
   const handleCloudLogin = async () => {
     // Call signInWithPopup immediately on click before React state updates so browsers do not block the popup
     const popupPromise = signInWithPopup(auth, googleProvider);
-    setUnauthorizedDomainHost(null);
     setCloudSyncing(true);
     setCloudSyncMsg('Đang mở cửa sổ đăng nhập Google...');
     try {
       const cred = await popupPromise;
+      setShowGoogleEmailPrompt(false);
       if (cred?.user?.email) {
-        const norm = setSavedSyncKey(cred.user.email);
-        setCloudSyncKey(norm);
-        setCloudKeyInput(norm);
+        await switchCloudAccountAndSync(cred.user.email, cred.user.email);
+      } else {
+        await syncWithCloudNow(true);
       }
-      await syncWithCloudNow(true);
       setShowCloudModal(false);
     } catch (err: any) {
       const code = String(err?.code || '');
       const msg = String(err?.message || '');
-      const isTopLevelWindow = (() => {
-        try {
-          return window.self === window.top;
-        } catch {
-          return false;
-        }
-      })();
 
-      if (code === 'auth/popup-blocked' && isTopLevelWindow) {
-        try {
-          setCloudSyncMsg('Trình duyệt đang chặn cửa sổ bật lên, đang chuyển sang đăng nhập Google toàn trang...');
-          await signInWithRedirect(auth, googleProvider);
-          return;
-        } catch (redirErr: any) {
-          setCloudSyncMsg('Không thể chuyển hướng đăng nhập Google: ' + (redirErr?.message || redirErr?.code || ''));
-          return;
+      if (
+        code === 'auth/unauthorized-domain' ||
+        msg.includes('unauthorized-domain') ||
+        code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-supported-in-this-environment'
+      ) {
+        setShowGoogleEmailPrompt(true);
+        if (!googleEmailDraft && connectedEmail) {
+          setGoogleEmailDraft(connectedEmail);
         }
-      }
-
-      if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
-        const currentHost = window.location.hostname;
-        setUnauthorizedDomainHost(currentHost);
         setCloudSyncMsg(
-          `Tên miền "${currentHost}" chưa nằm trong danh sách Authorized domains của dự án Firebase mặc định. Hãy thêm "${currentHost}" trong Firebase Console (nếu dùng dự án Firebase riêng của bạn), hoặc dùng trực tiếp Mã đồng bộ "quangminh1485" ở ô bên trên để đồng bộ dữ liệu ngay giữa AI Studio và Vercel.`
+          'Tên miền này không hỗ trợ popup Google trực tiếp. Hãy nhập địa chỉ Gmail của bạn vào ô bên dưới để kết nối & đồng bộ ngay!'
         );
-      } else if (code === 'auth/popup-blocked') {
-        setCloudSyncMsg('Trình duyệt đang chặn cửa sổ bật lên (Popup). Vui lòng bấm "Cho phép pop-up" trên thanh địa chỉ trình duyệt rồi thử lại.');
       } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setCloudSyncMsg('Bạn đã đóng cửa sổ đăng nhập Google. Bấm lại nút bên dưới để đăng nhập.');
+        setShowGoogleEmailPrompt(true);
+        setCloudSyncMsg('Bạn đã đóng cửa sổ Google. Bạn có thể bấm thử lại hoặc nhập trực tiếp Gmail bên dưới để đồng bộ.');
       } else {
-        setCloudSyncMsg('Lỗi đăng nhập Google: ' + (code || msg || 'Vui lòng thử lại.'));
+        setShowGoogleEmailPrompt(true);
+        setCloudSyncMsg('Không mở được popup Google (' + (code || 'lỗi kết nối') + '). Bạn hãy nhập trực tiếp Gmail bên dưới để đồng bộ.');
       }
     } finally {
       setCloudSyncing(false);
@@ -801,6 +851,10 @@ export default function App() {
   const handleCloudLogout = async () => {
     try {
       setSavedSyncKey('');
+      setSavedCloudEmail('');
+      setConnectedEmail('');
+      setGoogleEmailDraft('');
+      setShowGoogleEmailPrompt(false);
       setCloudSyncKey('');
       setCloudKeyInput('');
       await fbSignOut(auth);
@@ -4993,37 +5047,6 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
                 <p className="text-xs font-semibold text-purple-600 dark:text-purple-400">{cloudSyncMsg}</p>
               )}
 
-              {unauthorizedDomainHost && (
-                <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 space-y-2 text-xs">
-                  <div className="font-bold text-amber-800 dark:text-amber-200">
-                    Hướng dẫn cấp quyền tên miền trên Firebase Console (chỉ làm 1 lần):
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <code className="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 font-mono font-bold text-amber-900 dark:text-amber-100">
-                      {unauthorizedDomainHost}
-                    </code>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard?.writeText(unauthorizedDomainHost);
-                        setCloudSyncMsg(`Đã sao chép "${unauthorizedDomainHost}". Dán vào mục Authorized domains trong Firebase Console.`);
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-amber-600 text-white font-bold hover:bg-amber-700 transition"
-                    >
-                      Sao chép tên miền
-                    </button>
-                    <a
-                      href="https://console.firebase.google.com/project/micro-banner-55xj8/authentication/settings"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1 rounded-lg bg-purple-600 text-white font-bold hover:bg-purple-700 transition"
-                    >
-                      Mở Firebase Console ↗
-                    </a>
-                  </div>
-                </div>
-              )}
-
               <div className="space-y-2 pt-2 border-t border-stone-200 dark:border-slate-800">
                 <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Mã đồng bộ / Email của bạn:</label>
                 <div className="flex gap-2">
@@ -5045,7 +5068,7 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
                 <p className="text-[11px] text-stone-400">Mặc định: quangminh1485. Dùng chung mã này trên mọi thiết bị để đồng bộ tự động.</p>
               </div>
 
-              <div className="pt-3 border-t border-stone-200 dark:border-slate-800 space-y-2">
+              <div className="pt-3 border-t border-stone-200 dark:border-slate-800 space-y-2.5">
                 <label className="text-xs font-bold text-stone-500 dark:text-slate-400">Đăng nhập bằng tài khoản Google:</label>
                 <div className="flex gap-2">
                   <button
@@ -5060,9 +5083,11 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
                       <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.18C.43 8.13 0 9.83 0 12s.43 3.87 1.18 5.39l4.09-3.15z"/>
                       <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.23 0 3.15 2.68 1.18 6.61l4.09 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
                     </svg>
-                    {cloudUser ? `Đang kết nối (${cloudUser.email}) – Đổi tài khoản` : 'Đăng nhập tài khoản Google'}
+                    {(cloudUser?.email || connectedEmail)
+                      ? `Đang kết nối (${cloudUser?.email || connectedEmail}) – Đổi tài khoản`
+                      : 'Đăng nhập tài khoản Google'}
                   </button>
-                  {cloudUser && (
+                  {(cloudUser || connectedEmail) && (
                     <button
                       type="button"
                       onClick={handleCloudLogout}
@@ -5072,6 +5097,59 @@ Hãy trả về ĐÚNG ${remaining} phần tử phân bổ đa dạng các loạ
                     </button>
                   )}
                 </div>
+
+                {showGoogleEmailPrompt ? (
+                  <div className="p-3.5 rounded-2xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 space-y-2.5">
+                    <div className="text-xs font-bold text-purple-900 dark:text-purple-200">
+                      Nhập Gmail của bạn để đăng nhập & đồng bộ trực tiếp
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="email"
+                        autoFocus
+                        value={googleEmailDraft}
+                        onChange={e => setGoogleEmailDraft(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleConfirmGoogleEmailLogin();
+                          }
+                        }}
+                        placeholder="vd: quangminh1485@gmail.com"
+                        className="flex-1 text-sm px-3 py-2 rounded-xl border border-purple-300 dark:border-purple-700 bg-white dark:bg-slate-900 text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleConfirmGoogleEmailLogin}
+                        disabled={cloudSyncing}
+                        className="px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-700 transition whitespace-nowrap"
+                      >
+                        Kết nối & Đồng bộ
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-purple-700 dark:text-purple-300">
+                      <span>Nhập đúng Gmail đã dùng trên AI Studio để đồng bộ 100% bài giảng và báo cáo về Vercel.</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowGoogleEmailPrompt(false)}
+                        className="font-semibold underline hover:no-underline whitespace-nowrap"
+                      >
+                        Đóng
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGoogleEmailPrompt(true);
+                      if (!googleEmailDraft && connectedEmail) setGoogleEmailDraft(connectedEmail);
+                    }}
+                    className="text-xs font-semibold text-purple-600 dark:text-purple-400 hover:underline"
+                  >
+                    Hoặc nhập trực tiếp địa chỉ Gmail để đồng bộ (dùng trên Vercel / TV)
+                  </button>
+                )}
               </div>
 
               <div className="pt-2 border-t border-stone-200 dark:border-slate-800 flex flex-wrap gap-2 justify-between items-center">

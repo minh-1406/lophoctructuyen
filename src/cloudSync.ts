@@ -25,6 +25,7 @@ import {
 const CHUNK_MAX_CHARS = 600000; // Strictly <= 750000 in firebase-blueprint.json & firestore.rules
 const REPORT_MAX_CHARS = 800000; // Strictly <= 850000 in firebase-blueprint.json & firestore.rules
 const SYNC_KEY_STORAGE = 'curivn_cloud_sync_key';
+const EMAIL_STORAGE = 'curivn_cloud_email';
 const DEFAULT_TEACHER_SYNC_KEY = 'quangminh1485';
 
 function sanitizeId(rawId: string): string {
@@ -45,6 +46,28 @@ export function normalizeSyncKey(rawInput: string): string {
     .slice(0, 80);
   if (cleaned.length < 3) return '';
   return cleaned;
+}
+
+export function getSavedCloudEmail(): string {
+  try {
+    return localStorage.getItem(EMAIL_STORAGE) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setSavedCloudEmail(email: string): string {
+  const trimmed = (email || '').trim().toLowerCase();
+  try {
+    if (trimmed) {
+      localStorage.setItem(EMAIL_STORAGE, trimmed);
+    } else {
+      localStorage.removeItem(EMAIL_STORAGE);
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return trimmed;
 }
 
 export function getSavedSyncKey(): string {
